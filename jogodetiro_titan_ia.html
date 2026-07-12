@@ -1293,16 +1293,17 @@
                         let tempoSemAlvo = now - bot.lockedTargetLostAt;
 
                         // abandona lastKnownTarget se distância grande E tempo esgotado
-                        let distLimite    = 800;
-                        let tempoLimite   = 15000;
-                        if (distAlvo > distLimite || tempoSemAlvo > tempoLimite) {
-                            bot.lastKnownTarget  = null;
-                            bot.lockedTargetId   = null;
-                            bot.lockedTargetUntil = 0;
-                            bot.lockedTargetLostAt = 0;
-                            bot.path             = null;
-                            bot.searchStartTime  = 0;
-                        } else if (distAlvo > 30) {
+                        // let distLimite    = 800;
+                        // let tempoLimite   = 15000;
+                        // if (distAlvo > distLimite || tempoSemAlvo > tempoLimite) {
+                        //     bot.lastKnownTarget  = null;
+                        //     bot.lockedTargetId   = null;
+                        //     bot.lockedTargetUntil = 0;
+                        //     bot.lockedTargetLostAt = 0;
+                        //     bot.path             = null;
+                        //     bot.searchStartTime  = 0;
+                        // } else
+                         if (distAlvo > 30) {
                             if (bot.path && bot.pathIndex >= bot.path.length) bot.path = null;
                             if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, bot.lastKnownTarget.x, bot.lastKnownTarget.y); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             let destino = bot.lastKnownTarget;
