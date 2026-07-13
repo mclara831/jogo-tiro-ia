@@ -1092,7 +1092,7 @@
 
             if (modoJogo === 'boss') {
                 for(let i=0; i<3; i++) { let allySpawn = getValidSpawn(false, true, 20); bots.push({ id: "ally" + i, teamId: 1, isBoss: false, x: allySpawn.x, y: allySpawn.y, radius: 15, hp: 150, armor: 100, damage: 25, color: "#2196F3", skin: "padrao", speed: 3.6, shootCooldown: 1000, lastShot: i*150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 }); }
-                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0 });
+                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1 });
                 caixas = []; 
             } else {
                 let botSpeedBase = 0.8 + (dificuldade * 0.3); let botCooldown = 2100 - (dificuldade * 300); let teamSpawns = {}; 
@@ -1269,6 +1269,8 @@
                         bot.lastKnownTarget = { x: alvoM.x, y: alvoM.y };
                         bot.lockedTargetLostAt = 0;
                         bot.searchStartTime = 0;
+                        bot.searchPoints = [];
+                        bot.searchPointIndex = -1;
                         bot.angle = Math.atan2(alvoM.y - bot.y, alvoM.x - bot.x);
                         let anguloMovimento = bot.angle;
                         if (!trajetoBloqueadoParaEntidade(bot.x, bot.y, alvoM.x, alvoM.y, bot.radius)) {
@@ -1292,18 +1294,20 @@
                         let distAlvo = Math.hypot(bot.lastKnownTarget.x - bot.x, bot.lastKnownTarget.y - bot.y);
                         let tempoSemAlvo = now - bot.lockedTargetLostAt;
 
-                        // abandona lastKnownTarget se distância grande E tempo esgotado
-                        // let distLimite    = 800;
-                        // let tempoLimite   = 15000;
-                        // if (distAlvo > distLimite || tempoSemAlvo > tempoLimite) {
-                        //     bot.lastKnownTarget  = null;
-                        //     bot.lockedTargetId   = null;
-                        //     bot.lockedTargetUntil = 0;
-                        //     bot.lockedTargetLostAt = 0;
-                        //     bot.path             = null;
-                        //     bot.searchStartTime  = 0;
-                        // } else
-                         if (distAlvo > 30) {
+
+                        //abandona lastKnownTarget se tempo esgotado
+                        let distLimite    = 800;
+                        let tempoLimite   = 15000;
+                        if (tempoSemAlvo > tempoLimite) {
+                            bot.lastKnownTarget  = null;
+                            bot.lockedTargetId   = null;
+                            bot.lockedTargetUntil = 0;
+                            bot.lockedTargetLostAt = 0;
+                            bot.path             = null;
+                            bot.searchStartTime  = 0;
+                        } else
+                         if (distAlvo > 300) {
+                            console.log(distAlvo)
                             if (bot.path && bot.pathIndex >= bot.path.length) bot.path = null;
                             if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, bot.lastKnownTarget.x, bot.lastKnownTarget.y); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             let destino = bot.lastKnownTarget;
@@ -1311,11 +1315,52 @@
                             bot.angle = Math.atan2(destino.y - bot.y, destino.x - bot.x);
                             moverEntidade(bot, Math.cos(bot.angle) * bot.speed, Math.sin(bot.angle) * bot.speed);
                         } else {
-                            if (bot.searchStartTime === 0) { bot.searchStartTime = now; bot.searchBaseAngle = bot.angle; }
-                            bot.angle = bot.searchBaseAngle + Math.sin((now - bot.searchStartTime) / 450) * 1.1;
-                            if (now - bot.searchStartTime > 3000) { bot.lastKnownTarget = null; bot.lockedTargetId = null; bot.lockedTargetUntil = 0; bot.lockedTargetLostAt = 0; bot.path = null; bot.searchStartTime = 0; }
-                        }
+                            // chegou ao lastKnownTarget — inicia busca por pontos prováveis
+                            if (bot.searchPointIndex < 0) {
+                                bot.searchPoints = gerarPontosInvestigacao(bot.lastKnownTarget, 180);
+                                console.log(bot.searchPoints)
+                                bot.searchPointIndex = 0;
+                                bot.path = null;
+                                bot.lastPathAttempt = 0;
+                            }
 
+                            let pontoAtual = bot.searchPoints[bot.searchPointIndex];
+
+                            if (pontoAtual) {
+                                console.log(bot.searchPointIndex)
+                                if (!bot.path && now - bot.lastPathAttempt > 200) {
+                                    bot.path = encontrarCaminhoAStar(bot.x, bot.y, pontoAtual.x, pontoAtual.y);
+                                    bot.pathIndex = 0;
+                                    bot.lastPathAttempt = now;
+                                }
+                                if (bot.path) {
+                                    pulcarProximoWaypoint(bot, bot.path);
+                                    let waypoint = bot.path[bot.pathIndex];
+                                    if (waypoint) {
+                                        bot.angle = Math.atan2(waypoint.y - bot.y, waypoint.x - bot.x);
+                                        moverEntidade(bot, Math.cos(bot.angle) * bot.speed, Math.sin(bot.angle) * bot.speed);
+                                    }
+                                    let chegouNoFim   = bot.pathIndex >= bot.path.length;
+                                    let chegouNoPonto = Math.hypot(bot.x - pontoAtual.x, bot.y - pontoAtual.y) < 300;
+                                    if (chegouNoFim || chegouNoPonto) {
+                                        bot.searchPointIndex++;
+                                        bot.path = null;
+                                        bot.lastPathAttempt = 0;
+                                    }
+                                } else {
+                                    bot.searchPointIndex++;
+                                    bot.lastPathAttempt = 0;
+                                }
+                            } else {
+                                bot.lastKnownTarget    = null;
+                                bot.lockedTargetId     = null;
+                                bot.lockedTargetUntil  = 0;
+                                bot.lockedTargetLostAt = 0;
+                                bot.searchPoints       = [];
+                                bot.searchPointIndex   = -1;
+                                bot.path               = null;
+                            }
+                        }
                     } else {
                         if (!bot.patrolPoint || Math.hypot(bot.patrolPoint.x - bot.x, bot.patrolPoint.y - bot.y) < 40) { bot.patrolPoint = getValidSpawn(false, false, 60); }
                         let ang = Math.atan2(bot.patrolPoint.y - bot.y, bot.patrolPoint.x - bot.x);
@@ -1366,6 +1411,25 @@
                 if (!tiroD && player.hp > 0 && b.teamId !== player.teamId && !player.isJumping && Math.hypot(b.x - player.x, b.y - player.y) < player.radius + 5) { tiroD = true; processHit(player, Math.hypot(b.x - player.x, b.y - player.y)); } 
                 if (tiroD) bullets.splice(i, 1);
             }
+        }
+
+        function gerarPontosInvestigacao(pos, raio) {
+            const pontos = [];
+            const qtd = 6 + Math.floor(Math.random() * 5);
+            const margem = 60;
+            for (let i = 0; i < qtd; i++) {
+                let ang  = Math.random() * Math.PI * 2;
+                let dist = raio * 0.4 + Math.random() * raio;
+                let x = Math.max(margem, Math.min(arena.width  - margem, pos.x + Math.cos(ang) * dist));
+                let y = Math.max(margem, Math.min(arena.height - margem, pos.y + Math.sin(ang) * dist));
+                pontos.push({ x, y });
+            }
+            // embaralha para que a ordem de visita seja imprevisível
+            for (let i = pontos.length - 1; i > 0; i--) {
+                let j = Math.floor(Math.random() * (i + 1));
+                [pontos[i], pontos[j]] = [pontos[j], pontos[i]];
+            }
+            return pontos;
         }
 
         function desenharPersonagem(x, y, angle, color, isJumping = false, armor = 0, teamId = 1, isBoss = false, hp = 100, maxHp = 100, skin = 'padrao') {
