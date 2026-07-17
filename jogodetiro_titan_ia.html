@@ -985,6 +985,76 @@
         function getEquipesVivas() { let equipes = new Set(); if (player && player.hp > 0) equipes.add(player.teamId); bots.forEach(b => equipes.add(b.teamId)); return equipes.size; }
         function atualizarMiraJogador() { if(!player) return; let viewCamX = canvas.width / 2 - player.x; let viewCamY = canvas.height / 2 - player.y; mouse.worldX = mouse.x - viewCamX; mouse.worldY = mouse.y - viewCamY; player.angle = Math.atan2(mouse.worldY - player.y, mouse.worldX - player.x); }
         function atirarJogador(now) { if(!player || player.hp <= 0 || now - player.lastShot <= 300) return; bullets.push({ ownerId: player.id, teamId: player.teamId, x: player.x + Math.cos(player.angle) * 20, y: player.y + Math.sin(player.angle) * 20, angle: player.angle, speed: 10, damage: player.damage, skin: player.skin }); player.lastShot = now; tocarSom("tiroJ"); }
+
+        // --- MIRA PREDITIVA DOS BOTS ---
+        // Mantem uma media da velocidade realmente executada. Assim, colisoes,
+        // esquivas e mudancas bruscas de direcao tambem influenciam a previsao.
+        function registrarVelocidade(entidade, xAnterior, yAnterior) {
+            const pesoMovimentoAtual = 0.48;
+            const dx = entidade.x - xAnterior;
+            const dy = entidade.y - yAnterior;
+            entidade.vx = (entidade.vx || 0) * (1 - pesoMovimentoAtual) + dx * pesoMovimentoAtual;
+            entidade.vy = (entidade.vy || 0) * (1 - pesoMovimentoAtual) + dy * pesoMovimentoAtual;
+            if (Math.hypot(entidade.vx, entidade.vy) < 0.03) { entidade.vx = 0; entidade.vy = 0; }
+        }
+
+        // Nos niveis 1 a 5, os bots usam respectivamente 20%, 40%, 60%, 80%
+        // e 100% da velocidade estimada. No modo chefao a progressao e gradual
+        // entre os dez niveis, preservando a curva de dificuldade do jogo.
+        function obterFatorPredicao() {
+            const nivel = Math.max(1, Number(dificuldade) || 1);
+            if (modoJogo === "boss") return Math.min(1, 0.2 + ((Math.min(10, nivel) - 1) * 0.8 / 9));
+            return Math.min(1, nivel * 0.2);
+        }
+
+        function calcularPosicaoInterceptacao(atirador, alvo, velocidadeProjetil) {
+            const fatorPredicao = obterFatorPredicao();
+            const vx = (alvo.vx || 0) * fatorPredicao;
+            const vy = (alvo.vy || 0) * fatorPredicao;
+            const rx = alvo.x - atirador.x;
+            const ry = alvo.y - atirador.y;
+            const a = vx * vx + vy * vy - velocidadeProjetil * velocidadeProjetil;
+            const b = 2 * (rx * vx + ry * vy);
+            const c = rx * rx + ry * ry;
+            let tempo = 0;
+
+            if (Math.abs(a) < 0.0001) {
+                if (Math.abs(b) > 0.0001) tempo = -c / b;
+            } else {
+                const discriminante = b * b - 4 * a * c;
+                if (discriminante >= 0) {
+                    const raiz = Math.sqrt(discriminante);
+                    const t1 = (-b - raiz) / (2 * a);
+                    const t2 = (-b + raiz) / (2 * a);
+                    const temposValidos = [t1, t2].filter(t => t > 0);
+                    if (temposValidos.length > 0) tempo = Math.min(...temposValidos);
+                }
+            }
+
+            // Se nao houver interceptacao matematica valida, ainda aplica uma
+            // antecipacao limitada pelo tempo aproximado de voo do projetil.
+            if (!Number.isFinite(tempo) || tempo <= 0) tempo = Math.sqrt(c) / velocidadeProjetil;
+            tempo = Math.min(tempo, 90);
+
+            let x = Math.max(alvo.radius, Math.min(arena.width - alvo.radius, alvo.x + vx * tempo));
+            let y = Math.max(alvo.radius, Math.min(arena.height - alvo.radius, alvo.y + vy * tempo));
+
+            // Evita que o bot escolha deliberadamente um ponto previsto atras de
+            // uma parede quando ele ainda possui linha de visao para o alvo atual.
+            if (temParede(atirador.x, atirador.y, x, y)) {
+                const xParcial = alvo.x + (x - alvo.x) * 0.5;
+                const yParcial = alvo.y + (y - alvo.y) * 0.5;
+                if (!temParede(atirador.x, atirador.y, xParcial, yParcial)) { x = xParcial; y = yParcial; }
+                else { x = alvo.x; y = alvo.y; }
+            }
+
+            return { x, y, fatorPredicao };
+        }
+
+        function obterAnguloMiraPreditiva(atirador, alvo, velocidadeProjetil) {
+            const posicaoPrevista = calcularPosicaoInterceptacao(atirador, alvo, velocidadeProjetil);
+            return Math.atan2(posicaoPrevista.y - atirador.y, posicaoPrevista.x - atirador.x);
+        }
         function caminhoArredondado(x, y, w, h, r) { let rr = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2); ctx.beginPath(); ctx.moveTo(x + rr, y); ctx.lineTo(x + w - rr, y); ctx.quadraticCurveTo(x + w, y, x + w, y + rr); ctx.lineTo(x + w, y + h - rr); ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h); ctx.lineTo(x + rr, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - rr); ctx.lineTo(x, y + rr); ctx.quadraticCurveTo(x, y, x + rr, y); ctx.closePath(); }
         function preencherRetanguloArredondado(x, y, w, h, r, fillStyle, strokeStyle = null, lineWidth = 1) { caminhoArredondado(x, y, w, h, r); ctx.fillStyle = fillStyle; ctx.fill(); if(strokeStyle) { ctx.strokeStyle = strokeStyle; ctx.lineWidth = lineWidth; ctx.stroke(); } }
         function desenharMira() { if (!player || player.hp <= 0 || gameState !== "PLAYING") return; ctx.save(); ctx.translate(mouse.x, mouse.y); ctx.strokeStyle = "rgba(54,216,255,0.92)"; ctx.lineWidth = 2; ctx.shadowColor = "rgba(54,216,255,0.65)"; ctx.shadowBlur = 12; ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.moveTo(-18, 0); ctx.lineTo(-7, 0); ctx.moveTo(7, 0); ctx.lineTo(18, 0); ctx.moveTo(0, -18); ctx.lineTo(0, -7); ctx.moveTo(0, 7); ctx.lineTo(0, 18); ctx.stroke(); ctx.restore(); }
@@ -1086,13 +1156,13 @@
             let pColor = pSkin === 'ninja' ? "#222" : coresSkins[pSkin];
 
             let pSpawn = getValidSpawn(true, false, 30);
-            player = { id: "player", teamId: 1, x: pSpawn.x, y: pSpawn.y, radius: 15, angle: 0, speed: pSpeed, hp: maxHp, armor: inventario.colete ? 50 : 0, damage: inventario.rifle ? 20 : 10, color: pColor, skin: pSkin, lastToxicDamage: 0, lastShot: 0, lastSword: 0, lastBomb: 0, lastBazooka: 0, lastRegen: Date.now(), bazookaAmmo: basucaDesbloqueada ? 2 : 0, isJumping: false, jumpTimer: 0, lastJump: 0 };
+            player = { id: "player", teamId: 1, x: pSpawn.x, y: pSpawn.y, vx: 0, vy: 0, radius: 15, angle: 0, speed: pSpeed, hp: maxHp, armor: inventario.colete ? 50 : 0, damage: inventario.rifle ? 20 : 10, color: pColor, skin: pSkin, lastToxicDamage: 0, lastShot: 0, lastSword: 0, lastBomb: 0, lastBazooka: 0, lastRegen: Date.now(), bazookaAmmo: basucaDesbloqueada ? 2 : 0, isJumping: false, jumpTimer: 0, lastJump: 0 };
 
             bots = []; bullets = []; particles = []; damageTexts = []; bombs = []; explosions = []; slashes = []; basucas = [];
 
             if (modoJogo === 'boss') {
-                for(let i=0; i<3; i++) { let allySpawn = getValidSpawn(false, true, 20); bots.push({ id: "ally" + i, teamId: 1, isBoss: false, x: allySpawn.x, y: allySpawn.y, radius: 15, hp: 150, armor: 100, damage: 25, color: "#2196F3", skin: "padrao", speed: 3.6, shootCooldown: 1000, lastShot: i*150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 }); }
-                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1 });
+                for(let i=0; i<3; i++) { let allySpawn = getValidSpawn(false, true, 20); bots.push({ id: "ally" + i, teamId: 1, isBoss: false, x: allySpawn.x, y: allySpawn.y, vx: 0, vy: 0, radius: 15, hp: 150, armor: 100, damage: 25, color: "#2196F3", skin: "padrao", speed: 3.6, shootCooldown: 1000, lastShot: i*150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 }); }
+                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, vx: 0, vy: 0, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1 });
                 caixas = []; 
             } else {
                 let botSpeedBase = 0.8 + (dificuldade * 0.3); let botCooldown = 2100 - (dificuldade * 300); let teamSpawns = {}; 
@@ -1102,7 +1172,7 @@
                     let bColor = "#f44336"; let bSkin = "inimigo"; let bSpeed = botSpeedBase; 
                     if (Math.random() < 0.15) { bColor = "#222"; bSkin = "ninja"; bSpeed += 1.0; } 
                     if (bSkin !== "ninja") { if (modoJogo === 'duo' && bTeamId === 1) { bColor = "#2196F3"; bSkin = "padrao"; } else { bColor = "#f44336"; bSkin = "inimigo"; } }
-                    bots.push({ id: "bot" + i, teamId: bTeamId, isBoss: false, x: spawnPt.x, y: spawnPt.y, radius: 15, hp: 100, armor: Math.random()<0.2?50:0, damage: Math.random()<0.2?20:10, color: bColor, skin: bSkin, speed: bSpeed, shootCooldown: botCooldown, lastShot: i * 150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 });
+                    bots.push({ id: "bot" + i, teamId: bTeamId, isBoss: false, x: spawnPt.x, y: spawnPt.y, vx: 0, vy: 0, radius: 15, hp: 100, armor: Math.random()<0.2?50:0, damage: Math.random()<0.2?20:10, color: bColor, skin: bSkin, speed: bSpeed, shootCooldown: botCooldown, lastShot: i * 150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 });
                 }
                 caixas = [ { x: 400, y: 400, size: 24, color: "#FF9800", tipo: "arma" }, { x: 1100, y: 1200, size: 24, color: "#F44336", tipo: "vida" }, { x: 750, y: 450, size: 24, color: "#00BCD4", tipo: "escudo" }, { x: 250, y: 750, size: 24, color: "#FFEB3B", tipo: "velocidade" }, { x: 1100, y: 400, size: 24, color: "#FF9800", tipo: "arma" }, { x: 400, y: 1200, size: 24, color: "#F44336", tipo: "vida" }, { x: 750, y: 1200, size: 24, color: "#00BCD4", tipo: "escudo" }, { x: 1250, y: 750, size: 24, color: "#FFEB3B", tipo: "velocidade" } ];
             }
@@ -1194,11 +1264,13 @@
             let maxHp = inventario.tita ? 150 : 100;
 
             if (player.hp > 0) {
+                let playerOldX = player.x; let playerOldY = player.y;
                 if (inventario.regen && player.hp < maxHp && now - player.lastRegen > 1000) { player.hp = Math.min(maxHp, player.hp + 1); player.lastRegen = now; atualizarUI(); }
                 if (keys[" "] && now - player.lastJump > 2000) { player.isJumping = true; player.jumpTimer = now; player.lastJump = now; }
                 let curSpd = player.speed; if (player.isJumping) { if (now - player.jumpTimer < 300) curSpd = player.speed * 3; else player.isJumping = false; }
                 let movX = 0, movY = 0; if (keys["w"]) movY -= 1; if (keys["s"]) movY += 1; if (keys["a"]) movX -= 1; if (keys["d"]) movX += 1; if (movX !== 0 || movY !== 0) { let len = Math.hypot(movX, movY); movX = (movX / len) * curSpd; movY = (movY / len) * curSpd; }
                 if (movX !== 0 || movY !== 0) moverEntidade(player, movX, movY);
+                registrarVelocidade(player, playerOldX, playerOldY);
                 atualizarMiraJogador();
                 
                 if (mouse.isDown) atirarJogador(now);
@@ -1281,10 +1353,10 @@
                             if (bot.path) { pulcarProximoWaypoint(bot, bot.path); if (bot.path[bot.pathIndex]) { let passo = bot.path[bot.pathIndex]; anguloMovimento = Math.atan2(passo.y - bot.y, passo.x - bot.x); } }
                         }
                         if (now - bot.lastAttackChange > 3000) { bot.attackState = Math.floor(Math.random() * 4); bot.lastAttackChange = now; }
-                        if (bot.attackState === 0) { if (menorD > 200 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > bot.shootCooldown) { for(let a = -0.2; a <= 0.2; a += 0.2) { bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: bot.angle + a, speed: 7, damage: bot.damage, skin: "boss" }); } bot.lastShot = now; tocarSom("tiroB"); } }
+                        if (bot.attackState === 0) { if (menorD > 200 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > bot.shootCooldown) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 7); for(let a = -0.2; a <= 0.2; a += 0.2) { bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: angleShoot + a, speed: 7, damage: bot.damage, skin: "boss" }); } bot.lastShot = now; tocarSom("tiroB"); } }
                         else if (bot.attackState === 1) { if (menorD > 80 || !visaoLimpa) { moverEntidade(bot, Math.cos(anguloMovimento) * (bot.speed*1.5), Math.sin(anguloMovimento) * (bot.speed*1.5)); } else if (now - bot.lastShot > 1000) { tocarSom("espada"); slashes.push({x: bot.x, y: bot.y, angle: bot.angle, life: 1.0, radius: 90, skin: "boss"}); [player, ...bots].forEach(o => { if(o.hp > 0 && o.teamId !== bot.teamId && Math.hypot(o.x - bot.x, o.y - bot.y) < 100) { darDano(o, 60, o.x, o.y, true, bot.id); } }); bot.lastShot = now; } }
-                        else if (bot.attackState === 2) { if (visaoLimpa && menorD > 100 && menorD < 600 && now - bot.lastShot > 2000) { tocarSom("bomba"); basucas.push({ teamId: bot.teamId, ownerId: bot.id, x: bot.x, y: bot.y, angle: bot.angle, speed: 12, damage: 60 }); bot.lastShot = now; } else if (menorD > 600 || !visaoLimpa) { moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); } }
-                        else if (bot.attackState === 3) { if (menorD > 150 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > 200) { bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: bot.angle + (Math.random()*0.8-0.4), speed: 5, damage: 5, skin: "boss" }); bot.lastShot = now; tocarSom("powerup"); } }
+                        else if (bot.attackState === 2) { if (visaoLimpa && menorD > 100 && menorD < 600 && now - bot.lastShot > 2000) { tocarSom("bomba"); let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 12); basucas.push({ teamId: bot.teamId, ownerId: bot.id, x: bot.x, y: bot.y, angle: angleShoot, speed: 12, damage: 60 }); bot.lastShot = now; } else if (menorD > 600 || !visaoLimpa) { moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); } }
+                        else if (bot.attackState === 3) { if (menorD > 150 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > 200) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 5); let dispersao = 0.5 - obterFatorPredicao() * 0.3; bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: angleShoot + (Math.random() * dispersao * 2 - dispersao), speed: 5, damage: 5, skin: "boss" }); bot.lastShot = now; tocarSom("powerup"); } }
 
                     } else if (bot.lastKnownTarget) {
 
@@ -1398,8 +1470,9 @@
                             moverEntidade(bot, Math.cos(anguloMovBotComum) * bot.speed, Math.sin(anguloMovBotComum) * bot.speed);
                         }
                     }
-                    if (alvoM && visaoLimpa && now - bot.lastShot > bot.shootCooldown && menorD < 400) { let angleShoot = Math.atan2(alvoM.y - bot.y, alvoM.x - bot.x); bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x + Math.cos(angleShoot) * 20, y: bot.y + Math.sin(angleShoot) * 20, angle: angleShoot, speed: 7, damage: bot.damage, skin: bot.skin }); bot.lastShot = now; tocarSom("tiroB"); }
+                    if (alvoM && visaoLimpa && now - bot.lastShot > bot.shootCooldown && menorD < 400) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 7); bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x + Math.cos(angleShoot) * 20, y: bot.y + Math.sin(angleShoot) * 20, angle: angleShoot, speed: 7, damage: bot.damage, skin: bot.skin }); bot.lastShot = now; tocarSom("tiroB"); }
                 }
+                registrarVelocidade(bot, oldX, oldY);
                 if (Math.hypot(bot.x - oldX, bot.y - oldY) < bot.speed * 0.15) { bot.stuckCounter = (bot.stuckCounter || 0) + 1; let limiteStuck = bot.isBoss ? 15 : 10; if (bot.stuckCounter > limiteStuck) { bot.patrolPoint = getValidSpawn(false, false, bot.isBoss ? 60 : 20); bot.ignoreTargetUntil = now + 1200; bot.path = null; bot.fleePath = null; bot.pathIndex = 0; bot.fleePathIndex = 0; bot.lastPathAttempt = 0; bot.lastFleePathAttempt = 0; bot.stuckCounter = 0; } } else { bot.stuckCounter = 0; }
             }
             for (let i = bullets.length - 1; i >= 0; i--) {
