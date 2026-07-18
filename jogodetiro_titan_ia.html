@@ -838,14 +838,19 @@
         function temParede(x1, y1, x2, y2) { let dist = Math.hypot(x2 - x1, y2 - y1); let steps = Math.max(5, Math.ceil(dist / 20)); for (let i = 0; i <= steps; i++) { let px = x1 + (x2 - x1) * (i / steps); let py = y1 + (y2 - y1) * (i / steps); for (let w of walls) { if (px > w.x && px < w.x + w.width && py > w.y && py < w.y + w.height) return true; } } return false; }
         function getValidSpawn(isPlayer = false, keepDistanceFromCenter = true, reqRad = 30) { let valid = false; let sx, sy; let attempts = 0; while (!valid && attempts < 150) { sx = Math.random() * 1300 + 100; sy = Math.random() * 1300 + 100; if (!isPlayer && keepDistanceFromCenter && Math.hypot(sx - 750, sy - 750) < 400) { attempts++; continue; } let hitWall = false; for (let w of walls) { if (sx > w.x - reqRad && sx < w.x + w.width + reqRad && sy > w.y - reqRad && sy < w.y + w.height + reqRad) { hitWall = true; break; } } if (!hitWall) valid = true; attempts++; } return {x: sx || 200, y: sy || 200}; }
         const TAMANHO_CELULA = 30;
-        const COLUNAS_GRADE = Math.floor(arena.width / TAMANHO_CELULA);
-        const LINHAS_GRADE = Math.floor(arena.height / TAMANHO_CELULA);
-        const MARGEM_NAVEGACAO = 100;
-        let gradeNavegacao = null;
+        const COLUNAS_GRADE = Math.ceil(arena.width / TAMANHO_CELULA);
+        const LINHAS_GRADE = Math.ceil(arena.height / TAMANHO_CELULA);
+        const FOLGA_NAVEGACAO = 5;
+        const gradesNavegacao = new Map();
 
-        function garantirGradeNavegacao() {
-            if (!gradeNavegacao) gradeNavegacao = construirGradeNavegacao(MARGEM_NAVEGACAO);
-            return gradeNavegacao;
+        function obterMargemNavegacao(raio) {
+            return Math.max(1, Math.ceil((raio || 15) + FOLGA_NAVEGACAO));
+        }
+
+        function garantirGradeNavegacao(raio = 15) {
+            let margem = obterMargemNavegacao(raio);
+            if (!gradesNavegacao.has(margem)) gradesNavegacao.set(margem, construirGradeNavegacao(margem));
+            return gradesNavegacao.get(margem);
         }
 
         function construirGradeNavegacao(margem) {
@@ -855,7 +860,9 @@
                 for (let coluna = 0; coluna < COLUNAS_GRADE; coluna++) {
                     let cx = coluna * TAMANHO_CELULA + TAMANHO_CELULA / 2;
                     let cy = linha * TAMANHO_CELULA + TAMANHO_CELULA / 2;
-                    let bloqueada = walls.some(w => cx > w.x - margem && cx < w.x + w.width + margem && cy > w.y - margem && cy < w.y + w.height + margem);
+                    let foraDaArena = cx < margem || cx > arena.width - margem || cy < margem || cy > arena.height - margem;
+                    let pertoDeParede = walls.some(w => cx > w.x - margem && cx < w.x + w.width + margem && cy > w.y - margem && cy < w.y + w.height + margem);
+                    let bloqueada = foraDaArena || pertoDeParede;
                     linhaCelulas.push(bloqueada ? 1 : 0);
                 }
                 grade.push(linhaCelulas);
@@ -871,17 +878,46 @@
             return { x: coluna * TAMANHO_CELULA + TAMANHO_CELULA / 2, y: linha * TAMANHO_CELULA + TAMANHO_CELULA / 2 };
         }
 
-        function celulaLivreMaisProxima(coluna, linha) {
-            for (let raio = 1; raio <= 6; raio++) {
+        function celulaLivreMaisProxima(grade, coluna, linha) {
+            if (grade[linha] && grade[linha][coluna] === 0) return { coluna, linha };
+            let limite = Math.max(COLUNAS_GRADE, LINHAS_GRADE);
+            for (let raio = 1; raio < limite; raio++) {
+                let melhor = null;
+                let melhorDistancia = Infinity;
                 for (let dLinha = -raio; dLinha <= raio; dLinha++) {
                     for (let dColuna = -raio; dColuna <= raio; dColuna++) {
+                        if (Math.max(Math.abs(dColuna), Math.abs(dLinha)) !== raio) continue;
                         let c = coluna + dColuna; let l = linha + dLinha;
                         if (c < 0 || l < 0 || c >= COLUNAS_GRADE || l >= LINHAS_GRADE) continue;
-                        if (gradeNavegacao[l][c] === 0) return { coluna: c, linha: l };
+                        if (grade[l][c] !== 0) continue;
+                        let distancia = dColuna * dColuna + dLinha * dLinha;
+                        if (distancia < melhorDistancia) { melhorDistancia = distancia; melhor = { coluna: c, linha: l }; }
                     }
                 }
+                if (melhor) return melhor;
             }
             return null;
+        }
+
+        function posicaoLivreParaEntidade(x, y, raio, folga = 0) {
+            let margem = raio + folga;
+            if (x < margem || x > arena.width - margem || y < margem || y > arena.height - margem) return false;
+            return !walls.some(w => checkCollision({ x, y, radius: margem }, w));
+        }
+
+        // Um alvo pode encostar mais na borda do que um inimigo maior. Nesse caso,
+        // a rota termina no ponto alcançavel mais proximo, sem insistir fora do mapa.
+        function normalizarDestinoNavegacao(x, y, raio) {
+            let margem = obterMargemNavegacao(raio);
+            let destino = {
+                x: Math.max(margem, Math.min(arena.width - margem, x)),
+                y: Math.max(margem, Math.min(arena.height - margem, y))
+            };
+            if (posicaoLivreParaEntidade(destino.x, destino.y, raio, FOLGA_NAVEGACAO)) return destino;
+            let grade = garantirGradeNavegacao(raio);
+            let celula = coordenadaParaCelula(destino.x, destino.y);
+            let livre = celulaLivreMaisProxima(grade, celula.coluna, celula.linha);
+            return livre ? celulaParaCoordenada(livre.coluna, livre.linha) : null;
         }
 
         function distanciaOctil(a, b) {
@@ -889,69 +925,65 @@
             return (dx + dy) + (Math.SQRT2 - 2) * Math.min(dx, dy);
         }
 
-        function simplificarCaminho(pontos) {
+        function simplificarCaminho(pontos, raio) {
             if (pontos.length <= 2) return pontos;
             let simplificado = [pontos[0]]; let atual = 0;
             while (atual < pontos.length - 1) {
                 let proximo = atual + 1;
                 for (let i = pontos.length - 1; i > atual; i--) {
-                    if (!temParede(pontos[atual].x, pontos[atual].y, pontos[i].x, pontos[i].y)) { proximo = i; break; }
+                    if (!trajetoBloqueadoParaEntidade(pontos[atual].x, pontos[atual].y, pontos[i].x, pontos[i].y, raio)) { proximo = i; break; }
                 }
                 simplificado.push(pontos[proximo]); atual = proximo;
             }
             return simplificado;
         }
 
-        function reconstruirCaminho(no) {
+        function reconstruirCaminho(no, raio, origem, destino) {
             let pontos = [];
             while (no) { pontos.unshift(celulaParaCoordenada(no.coluna, no.linha)); no = no.pai; }
-            return simplificarCaminho(pontos);
+            if (pontos.length === 0 || Math.hypot(pontos[0].x - origem.x, pontos[0].y - origem.y) > 1) pontos.unshift(origem);
+            let ultimo = pontos[pontos.length - 1];
+            if (Math.hypot(ultimo.x - destino.x, ultimo.y - destino.y) > 1 && !trajetoBloqueadoParaEntidade(ultimo.x, ultimo.y, destino.x, destino.y, raio)) pontos.push(destino);
+            return simplificarCaminho(pontos, raio);
         }
 
         function trajetoBloqueadoParaEntidade(x1, y1, x2, y2, raio) {
-            let r = (raio !== undefined) ? raio : 100;
+            let r = (raio !== undefined) ? raio : 15;
             let dist = Math.hypot(x2 - x1, y2 - y1);
-            if (dist < 1) return false;
-            let passos = Math.max(8, Math.ceil(dist / 20));
-            let dx = (x2 - x1) / dist;
-            let dy = (y2 - y1) / dist;
-            let px90 = -dy * r * 0.85;
-            let py90 = dx * r * 0.85;
+            if (dist < 0.01) return !posicaoLivreParaEntidade(x1, y1, r);
+            let passos = Math.max(1, Math.ceil(dist / Math.max(8, r * 0.5)));
             for (let i = 0; i <= passos; i++) {
-                let cx = x1 + dx * dist * (i / passos);
-                let cy = y1 + dy * dist * (i / passos);
-                for (let lado = -1; lado <= 1; lado++) {
-                    let tx = cx + px90 * lado;
-                    let ty = cy + py90 * lado;
-                    if (tx < r || tx > arena.width - r) return true;
-                    if (ty < r || ty > arena.height - r) return true;
-                    for (let w of walls) {
-                        if (checkCollision({ x: tx, y: ty, radius: r * 0.85 }, w)) return true;
-                    }
-                }
+                let t = i / passos;
+                let cx = x1 + (x2 - x1) * t;
+                let cy = y1 + (y2 - y1) * t;
+                if (!posicaoLivreParaEntidade(cx, cy, r)) return true;
             }
             return false;
         }
 
         function pulcarProximoWaypoint(bot, caminho, propriedadeIndice = 'pathIndex') {
             if (!caminho || caminho.length === 0) return false;
-            let indice = bot[propriedadeIndice];
-            let waypoint = caminho[Math.min(indice, caminho.length - 1)];
-            let distancia = Math.hypot(waypoint.x - bot.x, waypoint.y - bot.y);
-            if (distancia < 25 || (bot.stuckCounter && bot.stuckCounter > 10)) {
-                if (indice < caminho.length - 1) {
-                    bot[propriedadeIndice]++;
-                    return true;
-                }
+            let indice = Number.isInteger(bot[propriedadeIndice]) ? bot[propriedadeIndice] : 0;
+            let avancou = false;
+            let tolerancia = Math.max(18, bot.radius * 0.7);
+            while (indice < caminho.length) {
+                let waypoint = caminho[indice];
+                if (Math.hypot(waypoint.x - bot.x, waypoint.y - bot.y) > tolerancia) break;
+                indice++;
+                avancou = true;
             }
-            return false;
+            bot[propriedadeIndice] = indice;
+            return avancou;
         }
 
-        function encontrarCaminhoAStar(origemX, origemY, destinoX, destinoY) {
-            let grade = garantirGradeNavegacao();
+        function encontrarCaminhoAStar(origemX, origemY, destinoX, destinoY, raio = 15) {
+            let grade = garantirGradeNavegacao(raio);
+            let destinoNormalizado = normalizarDestinoNavegacao(destinoX, destinoY, raio);
+            if (!destinoNormalizado) return null;
             let inicio = coordenadaParaCelula(origemX, origemY);
-            let fim = coordenadaParaCelula(destinoX, destinoY);
-            if (grade[fim.linha][fim.coluna] === 1) { let livre = celulaLivreMaisProxima(fim.coluna, fim.linha); if (!livre) return null; fim = livre; }
+            let fim = coordenadaParaCelula(destinoNormalizado.x, destinoNormalizado.y);
+            if (grade[inicio.linha][inicio.coluna] === 1) { let livre = celulaLivreMaisProxima(grade, inicio.coluna, inicio.linha); if (!livre) return null; inicio = livre; }
+            if (grade[fim.linha][fim.coluna] === 1) { let livre = celulaLivreMaisProxima(grade, fim.coluna, fim.linha); if (!livre) return null; fim = livre; }
             let chaveDe = (coluna, linha) => linha * COLUNAS_GRADE + coluna;
             let noInicial = { coluna: inicio.coluna, linha: inicio.linha, g: 0, h: distanciaOctil(inicio, fim), pai: null }; noInicial.f = noInicial.h;
             let abertos = [noInicial]; let menorG = new Map([[chaveDe(inicio.coluna, inicio.linha), 0]]); let fechados = new Set();
@@ -962,7 +994,7 @@
                 let indice = 0;
                 for (let i = 1; i < abertos.length; i++) if (abertos[i].f < abertos[indice].f) indice = i;
                 let atual = abertos.splice(indice, 1)[0];
-                if (atual.coluna === fim.coluna && atual.linha === fim.linha) return reconstruirCaminho(atual);
+                if (atual.coluna === fim.coluna && atual.linha === fim.linha) return reconstruirCaminho(atual, raio, { x: origemX, y: origemY }, destinoNormalizado);
                 fechados.add(chaveDe(atual.coluna, atual.linha));
                 for (let [dColuna, dLinha] of direcoes) {
                     let coluna = atual.coluna + dColuna; let linha = atual.linha + dLinha;
@@ -982,7 +1014,7 @@
             return null;
         }
 
-        function getEquipesVivas() { let equipes = new Set(); if (player && player.hp > 0) equipes.add(player.teamId); bots.forEach(b => equipes.add(b.teamId)); return equipes.size; }
+        function getEquipesVivas() { let equipes = new Set(); if (player && player.hp > 0) equipes.add(player.teamId); bots.forEach(b => { if (b.hp > 0) equipes.add(b.teamId); }); return equipes.size; }
         function atualizarMiraJogador() { if(!player) return; let viewCamX = canvas.width / 2 - player.x; let viewCamY = canvas.height / 2 - player.y; mouse.worldX = mouse.x - viewCamX; mouse.worldY = mouse.y - viewCamY; player.angle = Math.atan2(mouse.worldY - player.y, mouse.worldX - player.x); }
         function atirarJogador(now) { if(!player || player.hp <= 0 || now - player.lastShot <= 300) return; bullets.push({ ownerId: player.id, teamId: player.teamId, x: player.x + Math.cos(player.angle) * 20, y: player.y + Math.sin(player.angle) * 20, angle: player.angle, speed: 10, damage: player.damage, skin: player.skin }); player.lastShot = now; tocarSom("tiroJ"); }
 
@@ -1085,7 +1117,7 @@
             radarCtx.fillStyle = "rgba(255,255,255,0.16)";
             walls.forEach(wall => radarCtx.fillRect(pad + wall.x * escala, pad + wall.y * escala, wall.width * escala, wall.height * escala));
             caixas.forEach(cx => { radarCtx.fillStyle = cx.tipo === "vida" ? "#ff4d6d" : (cx.tipo === "arma" ? "#ffd166" : (cx.tipo === "escudo" ? "#36d8ff" : "#63f0a0")); radarCtx.fillRect(pad + cx.x * escala - 2, pad + cx.y * escala - 2, 4, 4); });
-            bots.forEach(bot => { radarCtx.fillStyle = bot.teamId === player.teamId ? "#36d8ff" : (bot.isBoss ? "#ff4d6d" : "#ff8a3d"); radarCtx.beginPath(); radarCtx.arc(pad + bot.x * escala, pad + bot.y * escala, bot.isBoss ? 4 : 2.5, 0, Math.PI * 2); radarCtx.fill(); });
+            bots.forEach(bot => { if (bot.hp <= 0) return; radarCtx.fillStyle = bot.teamId === player.teamId ? "#36d8ff" : (bot.isBoss ? "#ff4d6d" : "#ff8a3d"); radarCtx.beginPath(); radarCtx.arc(pad + bot.x * escala, pad + bot.y * escala, bot.isBoss ? 4 : 2.5, 0, Math.PI * 2); radarCtx.fill(); });
             radarCtx.fillStyle = "#63f0a0";
             radarCtx.beginPath(); radarCtx.arc(pad + player.x * escala, pad + player.y * escala, 4, 0, Math.PI * 2); radarCtx.fill();
             radarCtx.strokeStyle = "rgba(99,240,160,0.82)";
@@ -1141,7 +1173,7 @@
             
             if(vitoria) { 
                 tocarNota(600, 'triangle', 0.5, 0.1); setTimeout(() => tocarNota(800, 'triangle', 0.6, 0.1), 120); 
-                let camTarget = player.hp > 0 ? player : (bots.find(b => b.teamId === player.teamId) || player);
+                let camTarget = player.hp > 0 ? player : (bots.find(b => b.hp > 0 && b.teamId === player.teamId) || player);
                 for(let i=0; i<80; i++) { particles.push({ x: camTarget.x + (Math.random()*1200-600), y: camTarget.y - 400 + Math.random()*200, vx: (Math.random() - 0.5) * 6, vy: Math.random() * 5 + 3, life: 3.0, size: Math.random() * 8 + 4, color: `hsl(${Math.random()*360}, 100%, 50%)` }); }
             } else { tocarNota(100, 'sawtooth', 0.8, 0.2); }
 
@@ -1160,12 +1192,12 @@
             let pColor = pSkin === 'ninja' ? "#222" : coresSkins[pSkin];
 
             let pSpawn = getValidSpawn(true, false, 30);
-            player = { id: "player", teamId: 1, x: pSpawn.x, y: pSpawn.y, vx: 0, vy: 0, radius: 15, angle: 0, speed: pSpeed, hp: maxHp, armor: inventario.colete ? 50 : 0, damage: inventario.rifle ? 20 : 10, color: pColor, skin: pSkin, lastToxicDamage: 0, lastShot: 0, lastSword: 0, lastBomb: 0, lastBazooka: 0, lastRegen: Date.now(), bazookaAmmo: basucaDesbloqueada ? 2 : 0, isJumping: false, jumpTimer: 0, lastJump: 0 };
+            player = { id: "player", teamId: 1, x: pSpawn.x, y: pSpawn.y, vx: 0, vy: 0, radius: 15, angle: 0, speed: pSpeed, hp: maxHp, maxHp: maxHp, armor: inventario.colete ? 50 : 0, damage: inventario.rifle ? 20 : 10, color: pColor, skin: pSkin, lastToxicDamage: 0, lastShot: 0, lastSword: 0, lastBomb: 0, lastBazooka: 0, lastRegen: Date.now(), bazookaAmmo: basucaDesbloqueada ? 2 : 0, isJumping: false, jumpTimer: 0, lastJump: 0 };
 
             bots = []; bullets = []; particles = []; damageTexts = []; bombs = []; explosions = []; slashes = []; basucas = [];
 
             if (modoJogo === 'boss') {
-                for(let i=0; i<3; i++) { let allySpawn = getValidSpawn(false, true, 20); bots.push({ id: "ally" + i, teamId: 1, isBoss: false, x: allySpawn.x, y: allySpawn.y, vx: 0, vy: 0, radius: 15, hp: 150, armor: 100, damage: 25, color: "#2196F3", skin: "padrao", speed: 3.6, shootCooldown: 1000, lastShot: i*150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 }); }
+                for(let i=0; i<3; i++) { let allySpawn = getValidSpawn(false, true, 20); bots.push({ id: "ally" + i, teamId: 1, isBoss: false, x: allySpawn.x, y: allySpawn.y, vx: 0, vy: 0, radius: 15, hp: 150, maxHp: 150, armor: 100, damage: 25, color: "#2196F3", skin: "padrao", speed: 3.6, shootCooldown: 1000, lastShot: i*150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 }); }
                 let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, vx: 0, vy: 0, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1 });
                 caixas = []; 
             } else {
@@ -1176,7 +1208,7 @@
                     let bColor = "#f44336"; let bSkin = "inimigo"; let bSpeed = botSpeedBase; 
                     if (Math.random() < 0.15) { bColor = "#222"; bSkin = "ninja"; bSpeed += 1.0; } 
                     if (bSkin !== "ninja") { if (modoJogo === 'duo' && bTeamId === 1) { bColor = "#2196F3"; bSkin = "padrao"; } else { bColor = "#f44336"; bSkin = "inimigo"; } }
-                    bots.push({ id: "bot" + i, teamId: bTeamId, isBoss: false, x: spawnPt.x, y: spawnPt.y, vx: 0, vy: 0, radius: 15, hp: 100, armor: Math.random()<0.2?50:0, damage: Math.random()<0.2?20:10, color: bColor, skin: bSkin, speed: bSpeed, shootCooldown: botCooldown, lastShot: i * 150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 });
+                    bots.push({ id: "bot" + i, teamId: bTeamId, isBoss: false, x: spawnPt.x, y: spawnPt.y, vx: 0, vy: 0, radius: 15, hp: 100, maxHp: 100, armor: Math.random()<0.2?50:0, damage: Math.random()<0.2?20:10, color: bColor, skin: bSkin, speed: bSpeed, shootCooldown: botCooldown, lastShot: i * 150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 });
                 }
                 caixas = [ { x: 400, y: 400, size: 24, color: "#FF9800", tipo: "arma" }, { x: 1100, y: 1200, size: 24, color: "#F44336", tipo: "vida" }, { x: 750, y: 450, size: 24, color: "#00BCD4", tipo: "escudo" }, { x: 250, y: 750, size: 24, color: "#FFEB3B", tipo: "velocidade" }, { x: 1100, y: 400, size: 24, color: "#FF9800", tipo: "arma" }, { x: 400, y: 1200, size: 24, color: "#F44336", tipo: "vida" }, { x: 750, y: 1200, size: 24, color: "#00BCD4", tipo: "escudo" }, { x: 1250, y: 750, size: 24, color: "#FFEB3B", tipo: "velocidade" } ];
             }
@@ -1192,6 +1224,9 @@
         function moverEntidade(entidade, movX, movY) {
             let r = entidade.radius;
 
+            if (Math.hypot(movX, movY) < 0.01) return;
+            entidade.tentouMoverNoFrame = true;
+
             let bloqueado = (tx, ty) => {
                 if (tx < r || tx > arena.width  - r) return true;
                 if (ty < r || ty > arena.height - r) return true;
@@ -1201,8 +1236,17 @@
                 return false;
             };
 
-            let nX = entidade.x + movX;
-            let nY = entidade.y + movY;
+            let solicitadoX = entidade.x + movX;
+            let solicitadoY = entidade.y + movY;
+            let nX = Math.max(r, Math.min(arena.width - r, solicitadoX));
+            let nY = Math.max(r, Math.min(arena.height - r, solicitadoY));
+            if (Math.abs(nX - solicitadoX) > 0.001 || Math.abs(nY - solicitadoY) > 0.001) entidade.atBoundaryLimit = true;
+
+            // Na borda, remove somente a componente que sairia da arena. Assim a
+            // entidade desliza de forma estavel pelo limite, sem alternar os lados.
+            movX = nX - entidade.x;
+            movY = nY - entidade.y;
+            if (Math.hypot(movX, movY) < 0.01) return;
 
             if (!bloqueado(nX, nY)) { entidade.x = nX; entidade.y = nY; return; }
 
@@ -1213,7 +1257,6 @@
             // deslizamento por normal de superfície: encontra a parede mais proxima
             // e projeta o movimento no plano tangente a ela
             let dist = Math.hypot(movX, movY);
-            if (dist < 0.01) return;
 
             let melhorNX = entidade.x;
             let melhorNY = entidade.y;
@@ -1261,7 +1304,7 @@
             if (gameState === "COUNTDOWN") { if (now >= gameStartTime) gameState = "PLAYING"; return; }
             if (gameState === "ANIMATING_END") return;
 
-            let myTeamAlive = (player.hp > 0) || bots.some(b => b.teamId === player.teamId);
+            let myTeamAlive = (player.hp > 0) || bots.some(b => b.hp > 0 && b.teamId === player.teamId);
             if (modoJogo === 'boss') { let boss = bots.find(b => b.isBoss); if (!boss && gameState !== "GAMEOVER") { finalizarPartida(1, true); return; } if (!myTeamAlive && gameState !== "GAMEOVER") { finalizarPartida(2, false); return; } } 
             else { let totalEquipes = getEquipesVivas(); if (modoJogo === 'solo' && player.hp <= 0 && gameState !== "GAMEOVER") { finalizarPartida(totalEquipes + 1); return; } if (!myTeamAlive && gameState !== "GAMEOVER") { finalizarPartida(totalEquipes + 1); return; } if (totalEquipes === 1 && myTeamAlive && gameState !== "GAMEOVER") { finalizarPartida(1); return; } if (safeZone.radius > 0) safeZone.radius -= 0.20; }
             
@@ -1290,52 +1333,59 @@
             for (let i = caixas.length - 1; i >= 0; i--) { for (let j = 0; j < bots.length; j++) { if (!bots[j].isBoss && Math.hypot(bots[j].x - caixas[i].x, bots[j].y - caixas[i].y) < bots[j].radius + caixas[i].size) { let cx = caixas[i]; if (cx.tipo === "arma") bots[j].damage = 20; else if (cx.tipo === "vida") bots[j].hp = Math.min(100, bots[j].hp + 50); else if (cx.tipo === "escudo") bots[j].armor = 50; else if (cx.tipo === "velocidade") bots[j].speed += 1.5; caixas.splice(i, 1); break; } } }
 
             for (let i = bots.length - 1; i >= 0; i--) {
-                let bot = bots[i]; let oldX = bot.x; let oldY = bot.y; 
+                let bot = bots[i]; let oldX = bot.x; let oldY = bot.y;
+                // Golpes corpo a corpo aplicam o dano durante a propria iteracao do
+                // Tita. Remove a unidade derrotada antes que ela aja ou seja desenhada.
+                if (bot.hp <= 0) { bots.splice(i, 1); atualizarUI(); continue; }
+                bot.tentouMoverNoFrame = false;
+                bot.atBoundaryLimit = false;
                 if (!bot.isBoss && modoJogo !== 'boss') { let dBC = Math.hypot(bot.x - 750, bot.y - 750); if (dBC > safeZone.radius && now - (bot.lastToxicDamage || 0) > 1000) { darDano(bot, 10, bot.x, bot.y, false, "gas"); bot.lastToxicDamage = now; if (bot.hp <= 0) { bots.splice(i, 1); atualizarUI(); continue; } } }
                 let isIgnoring = now < (bot.ignoreTargetUntil || 0); let alvoM = null; let menorD = Infinity; 
-                if (!isIgnoring) { if (player.hp > 0 && player.teamId !== bot.teamId) { let d = Math.hypot(player.x - bot.x, player.y - bot.y); if (d < menorD) { menorD = d; alvoM = player; } } bots.forEach(o => { if (o.teamId !== bot.teamId) { let d = Math.hypot(o.x - bot.x, o.y - bot.y); if (d < menorD) { menorD = d; alvoM = o; } } }); }
+                if (!isIgnoring) { if (player.hp > 0 && player.teamId !== bot.teamId) { let d = Math.hypot(player.x - bot.x, player.y - bot.y); if (d < menorD) { menorD = d; alvoM = player; } } bots.forEach(o => { if (o.hp > 0 && o.teamId !== bot.teamId) { let d = Math.hypot(o.x - bot.x, o.y - bot.y); if (d < menorD) { menorD = d; alvoM = o; } } }); }
                 let visaoLimpa = alvoM ? !temParede(bot.x, bot.y, alvoM.x, alvoM.y) : false; if (alvoM && !visaoLimpa) alvoM = null; 
                 if (bot.isBoss) {
 
-                    // --- TARGET LOCK: escolhe e mantém um único alvo por 3-5s ---
+                    // --- TARGET LOCK: mantém o alvo, mas finaliza oponentes críticos ---
                     let candidatos = [];
-                    if (player.hp > 0 && player.teamId !== bot.teamId) {
-                        let d = Math.hypot(player.x - bot.x, player.y - bot.y);
-                        let visivel = !temParede(bot.x, bot.y, player.x, player.y);
-                        candidatos.push({ id: player.id, ref: player, dist: d, visivel });
-                    }
+                    let adicionarCandidatoTita = (alvo) => {
+                        if (!alvo || alvo === bot || alvo.hp <= 0 || alvo.teamId === bot.teamId) return;
+                        let d = Math.hypot(alvo.x - bot.x, alvo.y - bot.y);
+                        let visivel = !temParede(bot.x, bot.y, alvo.x, alvo.y);
+                        let vidaMaxima = Math.max(1, Number(alvo.maxHp) || 100);
+                        let vidaRelativa = Math.max(0, Math.min(1, alvo.hp / vidaMaxima));
+                        candidatos.push({ id: alvo.id, ref: alvo, dist: d, visivel, vidaRelativa });
+                    };
+                    adicionarCandidatoTita(player);
                     bots.forEach(o => {
-                        if (o.teamId !== bot.teamId && o.hp > 0) {
-                            let d = Math.hypot(o.x - bot.x, o.y - bot.y);
-                            let visivel = !temParede(bot.x, bot.y, o.x, o.y);
-                            candidatos.push({ id: o.id, ref: o, dist: d, visivel });
-                        }
+                        adicionarCandidatoTita(o);
                     });
 
                     let lockedExpired  = now >= bot.lockedTargetUntil;
-                    let lockedStillValid = !lockedExpired && candidatos.some(c => c.id === bot.lockedTargetId && c.visivel);
+                    let visiveis = candidatos.filter(c => c.visivel);
+                    let alvoTravado = visiveis.find(c => c.id === bot.lockedTargetId) || null;
+                    let lockedStillValid = !lockedExpired && !!alvoTravado;
+                    let criticos = visiveis.filter(c => c.vidaRelativa <= 0.15 && c.dist <= 700);
+                    let criticoPrioritario = criticos.length > 0
+                        ? criticos.reduce((a, b) => (a.vidaRelativa * 1200 + a.dist) < (b.vidaRelativa * 1200 + b.dist) ? a : b)
+                        : null;
 
-                    if (!lockedStillValid) {
-                        let visiveis  = candidatos.filter(c => c.visivel);
-                        let escolhido = null;
-                        if (visiveis.length > 0) {
-                            if (!lockedExpired && candidatos.some(c => c.id === bot.lockedTargetId)) {
-                                escolhido = candidatos.find(c => c.id === bot.lockedTargetId) || null;
-                            }
-                            if (!escolhido) {
-                                escolhido = visiveis.reduce((a, b) => a.dist < b.dist ? a : b);
-                                let duracao = 3000 + Math.random() * 2000;
-                                bot.lockedTargetId   = escolhido.id;
-                                bot.lockedTargetUntil = now + duracao;
-                            }
-                        } else {
-                            bot.lockedTargetId    = null;
-                            bot.lockedTargetUntil = 0;
-                        }
-                        alvoM = escolhido ? escolhido.ref : null;
+                    // Um alvo vivo com ate 15% de HP recebe prioridade temporaria.
+                    // Se o alvo ja travado tambem for crítico, o Tita nao fica trocando.
+                    if (criticoPrioritario && (!lockedStillValid || !alvoTravado || alvoTravado.vidaRelativa > 0.15)) {
+                        alvoM = criticoPrioritario.ref;
+                        bot.lockedTargetId = criticoPrioritario.id;
+                        bot.lockedTargetUntil = now + 2500;
+                    } else if (lockedStillValid) {
+                        alvoM = alvoTravado.ref;
+                    } else if (visiveis.length > 0) {
+                        let escolhido = visiveis.reduce((a, b) => (a.dist + a.vidaRelativa * 150) < (b.dist + b.vidaRelativa * 150) ? a : b);
+                        alvoM = escolhido.ref;
+                        bot.lockedTargetId = escolhido.id;
+                        bot.lockedTargetUntil = now + 3000 + Math.random() * 2000;
                     } else {
-                        let c = candidatos.find(c => c.id === bot.lockedTargetId);
-                        alvoM = c ? c.ref : null;
+                        bot.lockedTargetId = null;
+                        bot.lockedTargetUntil = 0;
+                        alvoM = null;
                     }
 
                     let visaoLimpa = alvoM ? !temParede(bot.x, bot.y, alvoM.x, alvoM.y) : false;
@@ -1353,7 +1403,7 @@
                             bot.path = null; bot.pathIndex = 0;
                         } else {
                             if (bot.path && bot.pathIndex >= bot.path.length) bot.path = null;
-                            if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, alvoM.x, alvoM.y); bot.pathIndex = 0; bot.lastPathAttempt = now; }
+                            if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, alvoM.x, alvoM.y, bot.radius); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             if (bot.path) { pulcarProximoWaypoint(bot, bot.path); if (bot.path[bot.pathIndex]) { let passo = bot.path[bot.pathIndex]; anguloMovimento = Math.atan2(passo.y - bot.y, passo.x - bot.x); } }
                         }
                         if (now - bot.lastAttackChange > 3000) { bot.attackState = Math.floor(Math.random() * 4); bot.lastAttackChange = now; }
@@ -1385,7 +1435,7 @@
                          if (distAlvo > 300) {
                             console.log(distAlvo)
                             if (bot.path && bot.pathIndex >= bot.path.length) bot.path = null;
-                            if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, bot.lastKnownTarget.x, bot.lastKnownTarget.y); bot.pathIndex = 0; bot.lastPathAttempt = now; }
+                            if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, bot.lastKnownTarget.x, bot.lastKnownTarget.y, bot.radius); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             let destino = bot.lastKnownTarget;
                             if (bot.path) { pulcarProximoWaypoint(bot, bot.path); if (bot.path[bot.pathIndex]) destino = bot.path[bot.pathIndex]; }
                             bot.angle = Math.atan2(destino.y - bot.y, destino.x - bot.x);
@@ -1405,7 +1455,7 @@
                             if (pontoAtual) {
                                 console.log(bot.searchPointIndex)
                                 if (!bot.path && now - bot.lastPathAttempt > 200) {
-                                    bot.path = encontrarCaminhoAStar(bot.x, bot.y, pontoAtual.x, pontoAtual.y);
+                                    bot.path = encontrarCaminhoAStar(bot.x, bot.y, pontoAtual.x, pontoAtual.y, bot.radius);
                                     bot.pathIndex = 0;
                                     bot.lastPathAttempt = now;
                                 }
@@ -1456,7 +1506,7 @@
                         let rotaBloqueada = trajetoBloqueadoParaEntidade(bot.x, bot.y, alvoV.x, alvoV.y, bot.radius);
                         if (rotaBloqueada) {
                             if (bot.path && bot.pathIndex >= bot.path.length) bot.path = null;
-                            if (!bot.path && now - bot.lastPathAttempt > 400) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, alvoV.x, alvoV.y); bot.pathIndex = 0; bot.lastPathAttempt = now; }
+                            if (!bot.path && now - bot.lastPathAttempt > 400) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, alvoV.x, alvoV.y, bot.radius); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             if (bot.path) { pulcarProximoWaypoint(bot, bot.path); if (bot.path[bot.pathIndex]) anguloMovBotComum = Math.atan2(bot.path[bot.pathIndex].y - bot.y, bot.path[bot.pathIndex].x - bot.x); }
                         } else { bot.path = null; }
                         if (alvoV === alvoM && !fugindo && !indoC) {
@@ -1465,7 +1515,7 @@
                             else { moverEntidade(bot, Math.cos(bot.angle + (Math.PI/2 * bot.strafeDir)) * bot.speed, Math.sin(bot.angle + (Math.PI/2 * bot.strafeDir)) * bot.speed); }
                         } else if (fugindo) {
                             if (bot.fleePath && bot.fleePathIndex >= bot.fleePath.length) bot.fleePath = null;
-                            if (!bot.fleePath && now - bot.lastFleePathAttempt > 400) { bot.fleePath = encontrarCaminhoAStar(bot.x, bot.y, 750, 750); bot.fleePathIndex = 0; bot.lastFleePathAttempt = now; }
+                            if (!bot.fleePath && now - bot.lastFleePathAttempt > 400) { bot.fleePath = encontrarCaminhoAStar(bot.x, bot.y, 750, 750, bot.radius); bot.fleePathIndex = 0; bot.lastFleePathAttempt = now; }
                             let destinoFuga = { x: 750, y: 750 };
                             if (bot.fleePath) { pulcarProximoWaypoint(bot, bot.fleePath, 'fleePathIndex'); if (bot.fleePath[bot.fleePathIndex]) destinoFuga = bot.fleePath[bot.fleePathIndex]; }
                             bot.angle = Math.atan2(destinoFuga.y - bot.y, destinoFuga.x - bot.x);
@@ -1477,7 +1527,16 @@
                     if (alvoM && visaoLimpa && now - bot.lastShot > bot.shootCooldown && menorD < 400) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 7); bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x + Math.cos(angleShoot) * 20, y: bot.y + Math.sin(angleShoot) * 20, angle: angleShoot, speed: 7, damage: bot.damage, skin: bot.skin }); bot.lastShot = now; tocarSom("tiroB"); }
                 }
                 registrarVelocidade(bot, oldX, oldY);
-                if (Math.hypot(bot.x - oldX, bot.y - oldY) < bot.speed * 0.15) { bot.stuckCounter = (bot.stuckCounter || 0) + 1; let limiteStuck = bot.isBoss ? 15 : 10; if (bot.stuckCounter > limiteStuck) { bot.patrolPoint = getValidSpawn(false, false, bot.isBoss ? 60 : 20); bot.ignoreTargetUntil = now + 1200; bot.path = null; bot.fleePath = null; bot.pathIndex = 0; bot.fleePathIndex = 0; bot.lastPathAttempt = 0; bot.lastFleePathAttempt = 0; bot.stuckCounter = 0; } } else { bot.stuckCounter = 0; }
+                let deslocamentoBot = Math.hypot(bot.x - oldX, bot.y - oldY);
+                if (!bot.tentouMoverNoFrame || (bot.atBoundaryLimit && deslocamentoBot < bot.speed * 0.15)) {
+                    // Parar porque o alvo esta fora do centro alcançavel da arena nao
+                    // e um travamento e nao deve disparar uma fuga aleatoria.
+                    bot.stuckCounter = 0;
+                } else if (deslocamentoBot < bot.speed * 0.15) {
+                    bot.stuckCounter = (bot.stuckCounter || 0) + 1;
+                    let limiteStuck = bot.isBoss ? 15 : 10;
+                    if (bot.stuckCounter > limiteStuck) { bot.patrolPoint = getValidSpawn(false, false, bot.isBoss ? 60 : 20); bot.ignoreTargetUntil = now + 1200; bot.path = null; bot.fleePath = null; bot.pathIndex = 0; bot.fleePathIndex = 0; bot.lastPathAttempt = 0; bot.lastFleePathAttempt = 0; bot.stuckCounter = 0; }
+                } else { bot.stuckCounter = 0; }
             }
             for (let i = bullets.length - 1; i >= 0; i--) {
                 let b = bullets[i]; b.x += Math.cos(b.angle) * b.speed; b.y += Math.sin(b.angle) * b.speed; if (b.x < -500 || b.x > 2000 || b.y < -500 || b.y > 2000) { bullets.splice(i, 1); continue; }
@@ -1576,7 +1635,7 @@
             particles.forEach(p => { ctx.fillStyle = p.color; ctx.globalAlpha = p.life; ctx.beginPath(); ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2); ctx.fill(); ctx.globalAlpha = 1.0; });
             
             if (player && player.hp > 0) desenharPersonagem(player.x, player.y, player.angle, player.color, player.isJumping, player.armor, player.teamId, false, player.hp, inventario.tita ? 150 : 100, player.skin);
-            bots.forEach(bot => desenharPersonagem(bot.x, bot.y, bot.angle, bot.color, false, bot.armor, bot.teamId, bot.isBoss, bot.hp, bot.maxHp||100, bot.skin));
+            bots.forEach(bot => { if (bot.hp > 0) desenharPersonagem(bot.x, bot.y, bot.angle, bot.color, false, bot.armor, bot.teamId, bot.isBoss, bot.hp, bot.maxHp||100, bot.skin); });
             
             bullets.forEach(b => { ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.angle); let s = b.skin || 'padrao'; let bulletColor = (player && b.teamId === player.teamId) ? "#ffd166" : (b.damage > 15 ? "#ff4d6d" : "#ff8a3d"); ctx.shadowColor = bulletColor; ctx.shadowBlur = 12; ctx.strokeStyle = bulletColor; ctx.lineWidth = b.damage > 15 ? 5 : 3; ctx.beginPath(); ctx.moveTo(-12, 0); ctx.lineTo(2, 0); ctx.stroke(); if(s === 'neon') { ctx.fillStyle = "#63f0a0"; ctx.beginPath(); ctx.ellipse(0, 0, 6, 3, 0, 0, Math.PI*2); ctx.fill(); } else if(s === 'ninja') { ctx.rotate(Date.now()/50); ctx.fillStyle = "#d7e8f8"; ctx.fillRect(-4, -1, 8, 2); ctx.fillRect(-1, -4, 2, 8); } else if(s === 'fantasma') { ctx.strokeStyle = "#fff"; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(0, 0, 4, 0, Math.PI*2); ctx.stroke(); } else if(s === 'dourada') { ctx.fillStyle = "#FFD700"; ctx.beginPath(); ctx.moveTo(-4,0); ctx.lineTo(0,-4); ctx.lineTo(4,0); ctx.lineTo(0,4); ctx.fill(); } else if(s === 'realeza') { ctx.fillStyle = "#B36BFF"; ctx.beginPath(); ctx.moveTo(4,0); ctx.lineTo(-4,-3); ctx.lineTo(-4,3); ctx.fill(); } else if(s === 'deserto') { ctx.fillStyle = "#C2B280"; ctx.fillRect(-4, -1, 8, 2); } else if(s === 'ciborgue') { ctx.fillStyle = "#36d8ff"; ctx.fillRect(-3,-3,6,6); } else { ctx.fillStyle = bulletColor; ctx.beginPath(); ctx.arc(0, 0, b.damage>15?5:4, 0, Math.PI * 2); ctx.fill(); } ctx.restore(); });
             basucas.forEach(bz => { ctx.save(); ctx.shadowColor = "rgba(255,77,109,0.85)"; ctx.shadowBlur = 16; ctx.fillStyle = "#c4cbd4"; ctx.beginPath(); ctx.ellipse(bz.x, bz.y, 10, 5, bz.angle, 0, Math.PI*2); ctx.fill(); ctx.fillStyle = "#ff4d6d"; ctx.beginPath(); ctx.arc(bz.x - Math.cos(bz.angle)*10, bz.y - Math.sin(bz.angle)*10, 4, 0, Math.PI*2); ctx.fill(); ctx.restore(); });
