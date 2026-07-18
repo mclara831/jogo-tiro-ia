@@ -990,7 +990,9 @@
         // Mantem uma media da velocidade realmente executada. Assim, colisoes,
         // esquivas e mudancas bruscas de direcao tambem influenciam a previsao.
         function registrarVelocidade(entidade, xAnterior, yAnterior) {
-            const pesoMovimentoAtual = 0.48;
+            // Da um pouco mais de peso ao movimento mais recente para que a mira
+            // reaja antes a corridas laterais e diagonais, sem eliminar a suavizacao.
+            const pesoMovimentoAtual = 0.58;
             const dx = entidade.x - xAnterior;
             const dy = entidade.y - yAnterior;
             entidade.vx = (entidade.vx || 0) * (1 - pesoMovimentoAtual) + dx * pesoMovimentoAtual;
@@ -998,13 +1000,15 @@
             if (Math.hypot(entidade.vx, entidade.vy) < 0.03) { entidade.vx = 0; entidade.vy = 0; }
         }
 
-        // Nos niveis 1 a 5, os bots usam respectivamente 20%, 40%, 60%, 80%
-        // e 100% da velocidade estimada. No modo chefao a progressao e gradual
-        // entre os dez niveis, preservando a curva de dificuldade do jogo.
+        // A antecipacao agora varia de 30% a 105%. O pequeno valor acima de 100%
+        // no ultimo nivel compensa o atraso natural da media de velocidade sem
+        // transformar todos os disparos em acertos inevitaveis.
         function obterFatorPredicao() {
             const nivel = Math.max(1, Number(dificuldade) || 1);
-            if (modoJogo === "boss") return Math.min(1, 0.2 + ((Math.min(10, nivel) - 1) * 0.8 / 9));
-            return Math.min(1, nivel * 0.2);
+            const fatorMinimo = 0.30;
+            const fatorMaximo = 1.05;
+            if (modoJogo === "boss") return fatorMinimo + ((Math.min(10, nivel) - 1) * (fatorMaximo - fatorMinimo) / 9);
+            return fatorMinimo + ((Math.min(5, nivel) - 1) * (fatorMaximo - fatorMinimo) / 4);
         }
 
         function calcularPosicaoInterceptacao(atirador, alvo, velocidadeProjetil) {
