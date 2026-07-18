@@ -931,7 +931,7 @@
             while (atual < pontos.length - 1) {
                 let proximo = atual + 1;
                 for (let i = pontos.length - 1; i > atual; i--) {
-                    if (!trajetoBloqueadoParaEntidade(pontos[atual].x, pontos[atual].y, pontos[i].x, pontos[i].y, raio)) { proximo = i; break; }
+                    if (!trajetoBloqueadoParaEntidade(pontos[atual].x, pontos[atual].y, pontos[i].x, pontos[i].y, raio, 3)) { proximo = i; break; }
                 }
                 simplificado.push(pontos[proximo]); atual = proximo;
             }
@@ -943,20 +943,20 @@
             while (no) { pontos.unshift(celulaParaCoordenada(no.coluna, no.linha)); no = no.pai; }
             if (pontos.length === 0 || Math.hypot(pontos[0].x - origem.x, pontos[0].y - origem.y) > 1) pontos.unshift(origem);
             let ultimo = pontos[pontos.length - 1];
-            if (Math.hypot(ultimo.x - destino.x, ultimo.y - destino.y) > 1 && !trajetoBloqueadoParaEntidade(ultimo.x, ultimo.y, destino.x, destino.y, raio)) pontos.push(destino);
+            if (Math.hypot(ultimo.x - destino.x, ultimo.y - destino.y) > 1 && !trajetoBloqueadoParaEntidade(ultimo.x, ultimo.y, destino.x, destino.y, raio, 3)) pontos.push(destino);
             return simplificarCaminho(pontos, raio);
         }
 
-        function trajetoBloqueadoParaEntidade(x1, y1, x2, y2, raio) {
+        function trajetoBloqueadoParaEntidade(x1, y1, x2, y2, raio, folga = 0) {
             let r = (raio !== undefined) ? raio : 15;
             let dist = Math.hypot(x2 - x1, y2 - y1);
-            if (dist < 0.01) return !posicaoLivreParaEntidade(x1, y1, r);
+            if (dist < 0.01) return !posicaoLivreParaEntidade(x1, y1, r, folga);
             let passos = Math.max(1, Math.ceil(dist / Math.max(8, r * 0.5)));
             for (let i = 0; i <= passos; i++) {
                 let t = i / passos;
                 let cx = x1 + (x2 - x1) * t;
                 let cy = y1 + (y2 - y1) * t;
-                if (!posicaoLivreParaEntidade(cx, cy, r)) return true;
+                if (!posicaoLivreParaEntidade(cx, cy, r, folga)) return true;
             }
             return false;
         }
@@ -965,7 +965,7 @@
             if (!caminho || caminho.length === 0) return false;
             let indice = Number.isInteger(bot[propriedadeIndice]) ? bot[propriedadeIndice] : 0;
             let avancou = false;
-            let tolerancia = Math.max(18, bot.radius * 0.7);
+            let tolerancia = Math.max(8, bot.radius * 0.35);
             while (indice < caminho.length) {
                 let waypoint = caminho[indice];
                 if (Math.hypot(waypoint.x - bot.x, waypoint.y - bot.y) > tolerancia) break;
@@ -976,7 +976,7 @@
             return avancou;
         }
 
-        function encontrarCaminhoAStar(origemX, origemY, destinoX, destinoY, raio = 15) {
+        function encontrarCaminhoAStar(origemX, origemY, destinoX, destinoY, raio = 15, opcoes = {}) {
             let grade = garantirGradeNavegacao(raio);
             let destinoNormalizado = normalizarDestinoNavegacao(destinoX, destinoY, raio);
             if (!destinoNormalizado) return null;
@@ -984,6 +984,15 @@
             let fim = coordenadaParaCelula(destinoNormalizado.x, destinoNormalizado.y);
             if (grade[inicio.linha][inicio.coluna] === 1) { let livre = celulaLivreMaisProxima(grade, inicio.coluna, inicio.linha); if (!livre) return null; inicio = livre; }
             if (grade[fim.linha][fim.coluna] === 1) { let livre = celulaLivreMaisProxima(grade, fim.coluna, fim.linha); if (!livre) return null; fim = livre; }
+            let restringirZona = !!opcoes.restringirZona;
+            let raioZonaPlanejado = Number.isFinite(opcoes.raioZona) ? opcoes.raioZona : safeZone.radius;
+            let celulaPermitida = (coluna, linha) => {
+                if (grade[linha][coluna] === 1) return false;
+                if (!restringirZona) return true;
+                let ponto = celulaParaCoordenada(coluna, linha);
+                return Math.hypot(ponto.x - CENTRO_ZONA_X, ponto.y - CENTRO_ZONA_Y) + raio + FOLGA_NAVEGACAO <= raioZonaPlanejado;
+            };
+            if (!celulaPermitida(inicio.coluna, inicio.linha) || !celulaPermitida(fim.coluna, fim.linha)) return null;
             let chaveDe = (coluna, linha) => linha * COLUNAS_GRADE + coluna;
             let noInicial = { coluna: inicio.coluna, linha: inicio.linha, g: 0, h: distanciaOctil(inicio, fim), pai: null }; noInicial.f = noInicial.h;
             let abertos = [noInicial]; let menorG = new Map([[chaveDe(inicio.coluna, inicio.linha), 0]]); let fechados = new Set();
@@ -999,8 +1008,8 @@
                 for (let [dColuna, dLinha] of direcoes) {
                     let coluna = atual.coluna + dColuna; let linha = atual.linha + dLinha;
                     if (coluna < 0 || linha < 0 || coluna >= COLUNAS_GRADE || linha >= LINHAS_GRADE) continue;
-                    if (grade[linha][coluna] === 1) continue;
-                    if (dColuna !== 0 && dLinha !== 0 && (grade[atual.linha][coluna] === 1 || grade[linha][atual.coluna] === 1)) continue;
+                    if (!celulaPermitida(coluna, linha)) continue;
+                    if (dColuna !== 0 && dLinha !== 0 && (!celulaPermitida(coluna, atual.linha) || !celulaPermitida(atual.coluna, linha))) continue;
                     let chave = chaveDe(coluna, linha);
                     if (fechados.has(chave)) continue;
                     let custo = (dColuna !== 0 && dLinha !== 0) ? Math.SQRT2 : 1;
@@ -1012,6 +1021,173 @@
                 }
             }
             return null;
+        }
+
+        const CENTRO_ZONA_X = arena.width / 2;
+        const CENTRO_ZONA_Y = arena.height / 2;
+
+        function anguloEstavelDaEntidade(entidade) {
+            let texto = String(entidade.id || "bot");
+            let hash = 0;
+            for (let i = 0; i < texto.length; i++) hash = ((hash * 31) + texto.charCodeAt(i)) >>> 0;
+            return (hash % 360) * Math.PI / 180;
+        }
+
+        function obterMargemReacaoZona() {
+            return Math.min(100, Math.max(24, safeZone.radius * 0.12));
+        }
+
+        function obterRaioUtilZona(entidade) {
+            let limiteFisico = safeZone.radius - entidade.radius - 20;
+            let limiteParaEncerrarFuga = safeZone.radius - obterMargemReacaoZona() - 12;
+            return Math.max(0, Math.min(limiteFisico, limiteParaEncerrarFuga));
+        }
+
+        // O centro geometrico da zona fica sobre as paredes centrais. Em vez de
+        // mandar todos para (750, 750), procura um ponto livre dentro do círculo.
+        function encontrarDestinoLivreNaZona(entidade) {
+            let raioUtil = obterRaioUtilZona(entidade);
+            let anguloRadial = Math.atan2(entidade.y - CENTRO_ZONA_Y, entidade.x - CENTRO_ZONA_X);
+            if (!Number.isFinite(anguloRadial)) anguloRadial = anguloEstavelDaEntidade(entidade);
+            let deslocamentoId = (anguloEstavelDaEntidade(entidade) % (Math.PI / 4)) - Math.PI / 8;
+            let raios = [raioUtil * 0.65, raioUtil * 0.45, raioUtil * 0.80, raioUtil * 0.25, raioUtil * 0.95, 0];
+            let desvios = [];
+            for (let passo = 0; passo < 16; passo++) desvios.push(passo * Math.PI / 8);
+            let melhor = null;
+            let melhorCusto = Infinity;
+
+            for (let raioCandidato of raios) {
+                for (let desvio of desvios) {
+                    let angulo = anguloRadial + deslocamentoId + desvio;
+                    let candidato = {
+                        x: CENTRO_ZONA_X + Math.cos(angulo) * raioCandidato,
+                        y: CENTRO_ZONA_Y + Math.sin(angulo) * raioCandidato
+                    };
+                    if (Math.hypot(candidato.x - CENTRO_ZONA_X, candidato.y - CENTRO_ZONA_Y) > raioUtil + 0.01) continue;
+                    if (!posicaoLivreParaEntidade(candidato.x, candidato.y, entidade.radius, FOLGA_NAVEGACAO)) continue;
+                    let custo = Math.hypot(candidato.x - entidade.x, candidato.y - entidade.y) + raioCandidato * 0.08;
+                    if (custo < melhorCusto) { melhorCusto = custo; melhor = candidato; }
+                }
+            }
+
+            // Quando o círculo já e menor que a região ocupada pelas paredes, nao
+            // existe ponto totalmente seguro. Ainda assim usa um destino alcançavel
+            // e estável, evitando que a entidade alterne direções até ser eliminada.
+            return melhor || normalizarDestinoNavegacao(CENTRO_ZONA_X, CENTRO_ZONA_Y, entidade.radius);
+        }
+
+        function obterDestinoZonaSegura(entidade, now) {
+            let alvoAtual = entidade.safeZoneTarget;
+            let zonaMudou = Math.abs((entidade.safeZoneRadiusAtTarget ?? Infinity) - safeZone.radius) > 18;
+            let raioUtilAtual = obterRaioUtilZona(entidade);
+            let alvoAindaSeguro = alvoAtual
+                && Math.hypot(alvoAtual.x - CENTRO_ZONA_X, alvoAtual.y - CENTRO_ZONA_Y) <= raioUtilAtual + 0.01
+                && posicaoLivreParaEntidade(alvoAtual.x, alvoAtual.y, entidade.radius, FOLGA_NAVEGACAO);
+            if (alvoAindaSeguro && !zonaMudou) return alvoAtual;
+
+            let novoAlvo = encontrarDestinoLivreNaZona(entidade);
+            if (novoAlvo && (!alvoAtual || Math.hypot(novoAlvo.x - alvoAtual.x, novoAlvo.y - alvoAtual.y) > 12)) {
+                entidade.fleePath = null;
+                entidade.fleePathIndex = 0;
+                entidade.lastFleePathAttempt = 0;
+            }
+            entidade.safeZoneTarget = novoAlvo;
+            entidade.safeZoneRadiusAtTarget = safeZone.radius;
+            entidade.lastSafeZoneTargetUpdate = now;
+            return novoAlvo;
+        }
+
+        const TAXA_FECHAMENTO_ZONA_SEGUNDO = 12;
+        const DANO_ZONA_POR_SEGUNDO = 10;
+        const TEMPO_MEMORIA_BOT = 4500;
+
+        function calcularMetricasRotaZona(caminho, entidade) {
+            if (!caminho || caminho.length < 2) return null;
+            let velocidadeSegundo = Math.max(30, entidade.speed * 60);
+            let distanciaTotal = 0;
+            let tempoExposto = 0;
+
+            for (let i = 1; i < caminho.length; i++) {
+                let a = caminho[i - 1]; let b = caminho[i];
+                let comprimento = Math.hypot(b.x - a.x, b.y - a.y);
+                let passos = Math.max(1, Math.ceil(comprimento / 12));
+                let pedaco = comprimento / passos;
+                for (let passo = 0; passo < passos; passo++) {
+                    let t = (passo + 0.5) / passos;
+                    let x = a.x + (b.x - a.x) * t;
+                    let y = a.y + (b.y - a.y) * t;
+                    let tempoNessePonto = (distanciaTotal + pedaco * (passo + 0.5)) / velocidadeSegundo;
+                    let raioPrevisto = Math.max(0, safeZone.radius - TAXA_FECHAMENTO_ZONA_SEGUNDO * tempoNessePonto);
+                    if (Math.hypot(x - CENTRO_ZONA_X, y - CENTRO_ZONA_Y) + entidade.radius > raioPrevisto) tempoExposto += pedaco / velocidadeSegundo;
+                }
+                distanciaTotal += comprimento;
+            }
+
+            return {
+                distancia: distanciaTotal,
+                tempo: distanciaTotal / velocidadeSegundo,
+                tempoExposto,
+                danoEstimado: tempoExposto > 0.05 ? Math.ceil(tempoExposto) * DANO_ZONA_POR_SEGUNDO : 0
+            };
+        }
+
+        function obterVidaRelativa(alvo) {
+            let maximo = Math.max(1, Number(alvo.maxHp) || 100);
+            return Math.max(0, Math.min(1, alvo.hp / maximo));
+        }
+
+        // Compara a rota curta (que pode sair do círculo) com uma rota restrita à
+        // zona. Vida, armadura, dificuldade, tempo ganho e dano provável entram na decisão.
+        function analisarAtalhoPelaZona(bot, alvo, now) {
+            if (!alvo || alvo.hp <= 0 || modoJogo === 'boss') return null;
+            let alvoDentro = Math.hypot(alvo.x - CENTRO_ZONA_X, alvo.y - CENTRO_ZONA_Y) + (alvo.radius || 15) <= safeZone.radius;
+            if (!alvoDentro) return null;
+
+            let idAlvo = alvo.id || "ultima-posicao";
+            let analiseAnterior = bot.zoneRiskAnalysis;
+            let mesmaSituacao = analiseAnterior
+                && analiseAnterior.targetId === idAlvo
+                && Math.hypot(analiseAnterior.targetX - alvo.x, analiseAnterior.targetY - alvo.y) < 45
+                && Math.abs(analiseAnterior.zoneRadius - safeZone.radius) < 18
+                && Math.abs(analiseAnterior.effectiveHp - (bot.hp + (bot.armor || 0))) < 15
+                && now < analiseAnterior.expiresAt;
+            if (mesmaSituacao) return analiseAnterior;
+
+            let rotaCurta = encontrarCaminhoAStar(bot.x, bot.y, alvo.x, alvo.y, bot.radius);
+            if (!rotaCurta) return null;
+            let metricasCurta = calcularMetricasRotaZona(rotaCurta, bot);
+            if (!metricasCurta || metricasCurta.tempoExposto <= 0.05) {
+                bot.zoneRiskPath = null; bot.zoneRiskPathIndex = 0;
+                bot.zoneRiskAnalysis = { targetId: idAlvo, targetX: alvo.x, targetY: alvo.y, zoneRadius: safeZone.radius, effectiveHp: bot.hp + (bot.armor || 0), expiresAt: now + 1200, requiresChoice: false };
+                return bot.zoneRiskAnalysis;
+            }
+
+            let rotaSegura = encontrarCaminhoAStar(bot.x, bot.y, alvo.x, alvo.y, bot.radius, { restringirZona: true, raioZona: safeZone.radius });
+            let metricasSegura = calcularMetricasRotaZona(rotaSegura, bot);
+            let vidaEfetiva = bot.hp + (bot.armor || 0);
+            let nivel = Math.max(1, Math.min(5, Number(dificuldade) || 1));
+            let reservaPercentual = 0.45 - (nivel - 1) * 0.055;
+            if (obterVidaRelativa(alvo) <= 0.20) reservaPercentual -= 0.05;
+            let reservaVida = Math.max(8, vidaEfetiva * reservaPercentual);
+            let danoSeguro = metricasSegura ? metricasSegura.danoEstimado : Infinity;
+            let danoExtra = metricasSegura ? Math.max(0, metricasCurta.danoEstimado - danoSeguro) : metricasCurta.danoEstimado;
+            let tempoGanho = metricasSegura ? metricasSegura.tempo - metricasCurta.tempo : Infinity;
+            let vantagemMinima = Math.max(0.8, (danoExtra / DANO_ZONA_POR_SEGUNDO) * 0.9);
+            let sobreviveComReserva = vidaEfetiva - metricasCurta.danoEstimado >= reservaVida;
+            let valeArriscar = sobreviveComReserva && (!metricasSegura || tempoGanho >= vantagemMinima);
+            let rotaSeguraViavel = !!(rotaSegura && metricasSegura && vidaEfetiva - metricasSegura.danoEstimado >= reservaVida);
+            let caminhoEscolhido = valeArriscar ? rotaCurta : (rotaSeguraViavel ? rotaSegura : null);
+
+            bot.zoneRiskPath = caminhoEscolhido;
+            bot.zoneRiskPathIndex = 0;
+            bot.zoneRiskAnalysis = {
+                targetId: idAlvo, targetX: alvo.x, targetY: alvo.y,
+                zoneRadius: safeZone.radius, effectiveHp: vidaEfetiva,
+                expiresAt: now + 1400, requiresChoice: true,
+                takeRisk: valeArriscar, canPursue: !!caminhoEscolhido,
+                riskyMetrics: metricasCurta, safeMetrics: metricasSegura
+            };
+            return bot.zoneRiskAnalysis;
         }
 
         function getEquipesVivas() { let equipes = new Set(); if (player && player.hp > 0) equipes.add(player.teamId); bots.forEach(b => { if (b.hp > 0) equipes.add(b.teamId); }); return equipes.size; }
@@ -1342,7 +1518,11 @@
                 if (!bot.isBoss && modoJogo !== 'boss') { let dBC = Math.hypot(bot.x - 750, bot.y - 750); if (dBC > safeZone.radius && now - (bot.lastToxicDamage || 0) > 1000) { darDano(bot, 10, bot.x, bot.y, false, "gas"); bot.lastToxicDamage = now; if (bot.hp <= 0) { bots.splice(i, 1); atualizarUI(); continue; } } }
                 let isIgnoring = now < (bot.ignoreTargetUntil || 0); let alvoM = null; let menorD = Infinity; 
                 if (!isIgnoring) { if (player.hp > 0 && player.teamId !== bot.teamId) { let d = Math.hypot(player.x - bot.x, player.y - bot.y); if (d < menorD) { menorD = d; alvoM = player; } } bots.forEach(o => { if (o.hp > 0 && o.teamId !== bot.teamId) { let d = Math.hypot(o.x - bot.x, o.y - bot.y); if (d < menorD) { menorD = d; alvoM = o; } } }); }
-                let visaoLimpa = alvoM ? !temParede(bot.x, bot.y, alvoM.x, alvoM.y) : false; if (alvoM && !visaoLimpa) alvoM = null; 
+                let visaoLimpa = alvoM ? !temParede(bot.x, bot.y, alvoM.x, alvoM.y) : false;
+                if (!bot.isBoss && alvoM && visaoLimpa) {
+                    bot.lastKnownEnemy = { id: alvoM.id, x: alvoM.x, y: alvoM.y, hp: alvoM.hp, maxHp: alvoM.maxHp || 100, radius: alvoM.radius || 15, teamId: alvoM.teamId, lastSeenAt: now };
+                }
+                if (alvoM && !visaoLimpa) alvoM = null;
                 if (bot.isBoss) {
 
                     // --- TARGET LOCK: mantém o alvo, mas finaliza oponentes críticos ---
@@ -1495,31 +1675,89 @@
                     }
                 } else {
                     let caixaM = null; let distC = Infinity; caixas.forEach(cx => { let d = Math.hypot(cx.x - bot.x, cx.y - bot.y); if (d < distC) { distC = d; caixaM = cx; } });
-                    let alvoV = alvoM; let indoC = false; let fugindo = false; let distR = menorD;
-                    let dBC = Math.hypot(bot.x - 750, bot.y - 750);
+                    let alvoMemoria = null;
+                    if (!isIgnoring && !alvoM && bot.lastKnownEnemy) {
+                        let referenciaAtual = bot.lastKnownEnemy.id === player.id ? player : bots.find(o => o.id === bot.lastKnownEnemy.id);
+                        let memoriaValida = now - bot.lastKnownEnemy.lastSeenAt <= TEMPO_MEMORIA_BOT && referenciaAtual && referenciaAtual.hp > 0 && referenciaAtual.teamId !== bot.teamId;
+                        let chegouNaMemoria = Math.hypot(bot.x - bot.lastKnownEnemy.x, bot.y - bot.lastKnownEnemy.y) < 35;
+                        if (memoriaValida && !chegouNaMemoria) alvoMemoria = { ...bot.lastKnownEnemy, isLastKnownPosition: true };
+                        else bot.lastKnownEnemy = null;
+                    }
+                    let alvoCombate = alvoM || alvoMemoria;
+                    let alvoV = alvoCombate; let indoC = false; let fugindo = false; let distR = alvoCombate ? Math.hypot(alvoCombate.x - bot.x, alvoCombate.y - bot.y) : Infinity;
+                    let dBC = Math.hypot(bot.x - CENTRO_ZONA_X, bot.y - CENTRO_ZONA_Y);
                     if (caixaM && distC < 300 && !temParede(bot.x, bot.y, caixaM.x, caixaM.y)) { alvoV = caixaM; indoC = true; distR = distC; }
-                    if (modoJogo !== 'boss' && dBC > safeZone.radius - 80) { alvoV = { x: 750, y: 750 }; fugindo = true; distR = dBC; }
+                    let analiseZona = null;
+                    if (alvoCombate && !indoC && trajetoBloqueadoParaEntidade(bot.x, bot.y, alvoCombate.x, alvoCombate.y, bot.radius)) {
+                        analiseZona = analisarAtalhoPelaZona(bot, alvoCombate, now);
+                    }
+                    let navegacaoEstrategica = !!(analiseZona && analiseZona.requiresChoice && analiseZona.canPursue);
+                    let perseguicaoInviavel = !!(analiseZona && analiseZona.requiresChoice && !analiseZona.canPursue);
+                    let margemReacaoZona = obterMargemReacaoZona();
+                    let deveBuscarZona = modoJogo !== 'boss' && (dBC > Math.max(0, safeZone.radius - margemReacaoZona) || perseguicaoInviavel);
+                    if (deveBuscarZona && !navegacaoEstrategica) {
+                        if (!bot.fugindoZona) {
+                            bot.path = null; bot.pathIndex = 0;
+                            bot.zoneRiskPath = null; bot.zoneRiskPathIndex = 0;
+                            bot.fleePath = null; bot.fleePathIndex = 0;
+                            bot.lastFleePathAttempt = 0;
+                        }
+                        alvoV = obterDestinoZonaSegura(bot, now);
+                        fugindo = !!alvoV;
+                        indoC = false;
+                        distR = dBC;
+                    } else if (navegacaoEstrategica) {
+                        if (bot.fugindoZona) { bot.fleePath = null; bot.fleePathIndex = 0; }
+                        fugindo = false;
+                        alvoV = alvoCombate;
+                        indoC = false;
+                    } else if (bot.fugindoZona) {
+                        bot.fleePath = null; bot.fleePathIndex = 0;
+                    }
+                    bot.fugindoZona = fugindo;
                     if (!alvoV) { if (!bot.patrolPoint || Math.hypot(bot.patrolPoint.x - bot.x, bot.patrolPoint.y - bot.y) < 30) { bot.patrolPoint = getValidSpawn(false, false, 20); } alvoV = bot.patrolPoint; distR = Math.hypot(alvoV.x - bot.x, alvoV.y - bot.y); }
                     if (alvoV) {
                         bot.angle = Math.atan2(alvoV.y - bot.y, alvoV.x - bot.x);
                         let anguloMovBotComum = bot.angle;
+                        let podeAvancarEstrategico = true;
                         let rotaBloqueada = trajetoBloqueadoParaEntidade(bot.x, bot.y, alvoV.x, alvoV.y, bot.radius);
-                        if (rotaBloqueada) {
+                        if (navegacaoEstrategica) {
+                            bot.path = null; bot.pathIndex = 0;
+                            if (bot.zoneRiskPath && bot.zoneRiskPathIndex >= bot.zoneRiskPath.length) {
+                                bot.zoneRiskPath = null;
+                                if (bot.zoneRiskAnalysis) bot.zoneRiskAnalysis.expiresAt = 0;
+                            }
+                            if (bot.zoneRiskPath) {
+                                pulcarProximoWaypoint(bot, bot.zoneRiskPath, 'zoneRiskPathIndex');
+                                if (bot.zoneRiskPath[bot.zoneRiskPathIndex]) {
+                                    let passoEstrategico = bot.zoneRiskPath[bot.zoneRiskPathIndex];
+                                    anguloMovBotComum = Math.atan2(passoEstrategico.y - bot.y, passoEstrategico.x - bot.x);
+                                }
+                            } else podeAvancarEstrategico = false;
+                        } else if (rotaBloqueada && !fugindo) {
                             if (bot.path && bot.pathIndex >= bot.path.length) bot.path = null;
                             if (!bot.path && now - bot.lastPathAttempt > 400) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, alvoV.x, alvoV.y, bot.radius); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             if (bot.path) { pulcarProximoWaypoint(bot, bot.path); if (bot.path[bot.pathIndex]) anguloMovBotComum = Math.atan2(bot.path[bot.pathIndex].y - bot.y, bot.path[bot.pathIndex].x - bot.x); }
-                        } else { bot.path = null; }
-                        if (alvoV === alvoM && !fugindo && !indoC) {
+                        } else if (!fugindo) { bot.path = null; }
+                        if (navegacaoEstrategica && !podeAvancarEstrategico) {
+                            // Aguarda somente o próximo recálculo estratégico.
+                        } else if (alvoV === alvoM && !fugindo && !indoC) {
                             if (!visaoLimpa || distR > 250) { moverEntidade(bot, Math.cos(anguloMovBotComum) * bot.speed, Math.sin(anguloMovBotComum) * bot.speed); }
                             else if (distR < 150) { moverEntidade(bot, -Math.cos(bot.angle) * (bot.speed * 0.8), -Math.sin(bot.angle) * (bot.speed * 0.8)); }
                             else { moverEntidade(bot, Math.cos(bot.angle + (Math.PI/2 * bot.strafeDir)) * bot.speed, Math.sin(bot.angle + (Math.PI/2 * bot.strafeDir)) * bot.speed); }
                         } else if (fugindo) {
                             if (bot.fleePath && bot.fleePathIndex >= bot.fleePath.length) bot.fleePath = null;
-                            if (!bot.fleePath && now - bot.lastFleePathAttempt > 400) { bot.fleePath = encontrarCaminhoAStar(bot.x, bot.y, 750, 750, bot.radius); bot.fleePathIndex = 0; bot.lastFleePathAttempt = now; }
-                            let destinoFuga = { x: 750, y: 750 };
-                            if (bot.fleePath) { pulcarProximoWaypoint(bot, bot.fleePath, 'fleePathIndex'); if (bot.fleePath[bot.fleePathIndex]) destinoFuga = bot.fleePath[bot.fleePathIndex]; }
-                            bot.angle = Math.atan2(destinoFuga.y - bot.y, destinoFuga.x - bot.x);
-                            moverEntidade(bot, Math.cos(bot.angle) * bot.speed, Math.sin(bot.angle) * bot.speed);
+                            if (rotaBloqueada && !bot.fleePath && now - bot.lastFleePathAttempt > 250) { bot.fleePath = encontrarCaminhoAStar(bot.x, bot.y, alvoV.x, alvoV.y, bot.radius); bot.fleePathIndex = 0; bot.lastFleePathAttempt = now; }
+                            let destinoFuga = alvoV;
+                            let podeAvancar = !rotaBloqueada;
+                            if (bot.fleePath) {
+                                pulcarProximoWaypoint(bot, bot.fleePath, 'fleePathIndex');
+                                if (bot.fleePath[bot.fleePathIndex]) { destinoFuga = bot.fleePath[bot.fleePathIndex]; podeAvancar = true; }
+                            }
+                            if (podeAvancar) {
+                                bot.angle = Math.atan2(destinoFuga.y - bot.y, destinoFuga.x - bot.x);
+                                moverEntidade(bot, Math.cos(bot.angle) * bot.speed, Math.sin(bot.angle) * bot.speed);
+                            }
                         } else {
                             moverEntidade(bot, Math.cos(anguloMovBotComum) * bot.speed, Math.sin(anguloMovBotComum) * bot.speed);
                         }
