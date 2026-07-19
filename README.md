@@ -10,6 +10,8 @@ A seleção do alvo é tratada como uma busca por pontos de coleta sob a perspec
 
 O ranking é reavaliado a cada 4 segundos. Enquanto o alvo ainda for válido e estiver no alcance, a decisão é mantida, evitando mudanças de foco a cada quadro e permitindo uma janela de reação para a equipe. Caso o alvo seja derrotado ou saia do alcance, uma nova busca é feita imediatamente entre os candidatos válidos.
 
+Há uma exceção de **finalização** acima do ranking: um oponente visível, dentro do alcance e com no máximo 10% de HP recebe foco imediato. Ao entrar nesse estado, o Titã cria um plano de execução com dois disparos preditivos: cada um recebe metade arredondada para cima da vida efetiva atual do alvo (HP + escudo). Portanto, dois acertos são suficientes para eliminar o alvo mesmo se ele possuir escudo. Se um projétil errar, a conclusão continua dependente de o Titã acertar os dois disparos planejados.
+
 Após a escolha, o Titã continua usando:
 
 - **A\*** para alcançar a posição do alvo prioritário quando uma parede bloqueia o trajeto;

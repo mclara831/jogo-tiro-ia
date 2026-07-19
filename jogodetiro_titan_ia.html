@@ -1207,6 +1207,7 @@
         // a cada quadro e manter uma janela real de resposta para a equipe.
         const INTERVALO_REAVALIACAO_TITA = 4000;
         const ALCANCE_PRIORIZACAO_TITA = 700;
+        const LIMIAR_VIDA_FINALIZACAO_TITA = 0.10;
 
         function obterEntidadePorId(id) {
             if (player && player.id === id) return player;
@@ -1252,12 +1253,45 @@
             );
             tita.threatRanking = ranking;
             tita.priorityTargetId = ranking.length > 0 ? ranking[0].id : null;
+            tita.priorityMode = "ameaça";
+            tita.finalizationPlan = null;
             tita.nextThreatEvaluationAt = now + (tita.threatEvaluationInterval || INTERVALO_REAVALIACAO_TITA);
             atualizarUI();
         }
 
+        function obterAlvoDeFinalizacaoDoTita(tita, candidatos) {
+            const finalizaveis = candidatos.map(candidato => {
+                const vidaMaxima = Math.max(1, Number(candidato.ref.maxHp) || 100);
+                const vidaRelativa = candidato.ref.hp / vidaMaxima;
+                const vidaEfetiva = candidato.ref.hp + Math.max(0, candidato.ref.armor || 0);
+                return { ...candidato, vidaRelativa, vidaEfetiva };
+            }).filter(candidato =>
+                candidato.vidaRelativa <= LIMIAR_VIDA_FINALIZACAO_TITA
+                && !temParede(tita.x, tita.y, candidato.ref.x, candidato.ref.y)
+            );
+            return finalizaveis.sort((a, b) =>
+                a.vidaRelativa - b.vidaRelativa || a.vidaEfetiva - b.vidaEfetiva || b.pontos - a.pontos
+            )[0] || null;
+        }
+
         function obterAlvoPrioritarioDoTita(tita, now) {
             let candidatos = listarCandidatosDoTita(tita);
+            const alvoDeFinalizacao = obterAlvoDeFinalizacaoDoTita(tita, candidatos);
+            if (alvoDeFinalizacao) {
+                const prioridadeMudou = tita.priorityTargetId !== alvoDeFinalizacao.id || tita.priorityMode !== "finalização";
+                tita.priorityTargetId = alvoDeFinalizacao.id;
+                tita.priorityMode = "finalização";
+                if (prioridadeMudou) {
+                    // Dois acertos preditivos são suficientes para remover a vida
+                    // e o escudo existentes no momento em que a execução começa.
+                    tita.finalizationPlan = {
+                        targetId: alvoDeFinalizacao.id,
+                        damagePerShot: Math.max(1, Math.ceil(alvoDeFinalizacao.vidaEfetiva / 2))
+                    };
+                }
+                if (prioridadeMudou) atualizarUI();
+                return alvoDeFinalizacao.ref;
+            }
             let alvoAtual = candidatos.find(candidato => candidato.id === tita.priorityTargetId);
             if (now >= (tita.nextThreatEvaluationAt || 0) || !alvoAtual) {
                 reavaliarAlvoPrioritarioDoTita(tita, now);
@@ -1390,8 +1424,11 @@
                 document.getElementById("infoModoTexto").innerText = "HP Chefão:";
                 document.getElementById("botsText").innerText = boss ? boss.hp : "0";
                 painelAmeaca.style.display = "flex";
-                const prioridade = boss && boss.threatRanking ? boss.threatRanking.find(item => item.id === boss.priorityTargetId) : null;
-                textoAmeaca.innerText = prioridade ? `${nomeExibicaoAmeaca(prioridade.id)} · ${Math.round(prioridade.pontos)} pts` : "Ranqueando...";
+                const alvoPrioritario = boss ? obterEntidadePorId(boss.priorityTargetId) : null;
+                const pontosPrioridade = boss && boss.threatById && boss.threatById[boss.priorityTargetId] ? boss.threatById[boss.priorityTargetId].pontos : 0;
+                textoAmeaca.innerText = alvoPrioritario
+                    ? `${boss.priorityMode === "finalização" ? "FINALIZAR " : ""}${nomeExibicaoAmeaca(alvoPrioritario.id)} · ${Math.round(pontosPrioridade)} pts`
+                    : "Ranqueando...";
             } else {
                 painelAmeaca.style.display = "none";
                 let numEquipes = getEquipesVivas();
@@ -1461,7 +1498,7 @@
 
             if (modoJogo === 'boss') {
                 for(let i=0; i<3; i++) { let allySpawn = getValidSpawn(false, true, 20); bots.push({ id: "ally" + i, teamId: 1, isBoss: false, x: allySpawn.x, y: allySpawn.y, vx: 0, vy: 0, radius: 15, hp: 150, maxHp: 150, armor: 100, damage: 25, color: "#2196F3", skin: "padrao", speed: 3.6, shootCooldown: 1000, lastShot: i*150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 }); }
-                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, vx: 0, vy: 0, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1, threatById: {}, threatRanking: [], priorityTargetId: null, threatRange: ALCANCE_PRIORIZACAO_TITA, threatEvaluationInterval: INTERVALO_REAVALIACAO_TITA, nextThreatEvaluationAt: 0 });
+                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, vx: 0, vy: 0, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1, threatById: {}, threatRanking: [], priorityTargetId: null, priorityMode: "ameaça", finalizationPlan: null, threatRange: ALCANCE_PRIORIZACAO_TITA, threatEvaluationInterval: INTERVALO_REAVALIACAO_TITA, nextThreatEvaluationAt: 0 });
                 caixas = []; 
             } else {
                 let botSpeedBase = 0.8 + (dificuldade * 0.3); let botCooldown = 2100 - (dificuldade * 300); let teamSpawns = {}; 
@@ -1612,8 +1649,8 @@
                 }
                 if (alvoM && !visaoLimpa) alvoM = null;
                 if (bot.isBoss) {
-                    // A prioridade deixa de depender de distância ou de HP baixo:
-                    // vence quem acumulou mais pontos de ameaça ao causar dano no Titã.
+                    // O ranking de ameaça define a prioridade normal; a rotina de
+                    // finalização pode interrompê-lo para eliminar um alvo crítico.
                     alvoM = obterAlvoPrioritarioDoTita(bot, now);
 
                     let visaoLimpa = alvoM ? !temParede(bot.x, bot.y, alvoM.x, alvoM.y) : false;
@@ -1634,11 +1671,21 @@
                             if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, alvoM.x, alvoM.y, bot.radius); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             if (bot.path) { pulcarProximoWaypoint(bot, bot.path); if (bot.path[bot.pathIndex]) { let passo = bot.path[bot.pathIndex]; anguloMovimento = Math.atan2(passo.y - bot.y, passo.x - bot.x); } }
                         }
-                        if (now - bot.lastAttackChange > 3000) { bot.attackState = Math.floor(Math.random() * 4); bot.lastAttackChange = now; }
-                        if (bot.attackState === 0) { if (menorD > 200 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > bot.shootCooldown) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 7); for(let a = -0.2; a <= 0.2; a += 0.2) { bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: angleShoot + a, speed: 7, damage: bot.damage, skin: "boss" }); } bot.lastShot = now; tocarSom("tiroB"); } }
-                        else if (bot.attackState === 1) { if (menorD > 80 || !visaoLimpa) { moverEntidade(bot, Math.cos(anguloMovimento) * (bot.speed*1.5), Math.sin(anguloMovimento) * (bot.speed*1.5)); } else if (now - bot.lastShot > 1000) { tocarSom("espada"); slashes.push({x: bot.x, y: bot.y, angle: bot.angle, life: 1.0, radius: 90, skin: "boss"}); [player, ...bots].forEach(o => { if(o.hp > 0 && o.teamId !== bot.teamId && Math.hypot(o.x - bot.x, o.y - bot.y) < 100) { darDano(o, 60, o.x, o.y, true, bot.id); } }); bot.lastShot = now; } }
-                        else if (bot.attackState === 2) { if (visaoLimpa && menorD > 100 && menorD < 600 && now - bot.lastShot > 2000) { tocarSom("bomba"); let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 12); basucas.push({ teamId: bot.teamId, ownerId: bot.id, x: bot.x, y: bot.y, angle: angleShoot, speed: 12, damage: 60 }); bot.lastShot = now; } else if (menorD > 600 || !visaoLimpa) { moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); } }
-                        else if (bot.attackState === 3) { if (menorD > 150 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > 200) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 5); let dispersao = 0.5 - obterFatorPredicao() * 0.3; bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: angleShoot + (Math.random() * dispersao * 2 - dispersao), speed: 5, damage: 5, skin: "boss" }); bot.lastShot = now; tocarSom("powerup"); } }
+                        if (bot.priorityMode === "finalização") {
+                            if (menorD > 200 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed);
+                            if (visaoLimpa && now - bot.lastShot > bot.shootCooldown) {
+                                const plano = bot.finalizationPlan && bot.finalizationPlan.targetId === alvoM.id ? bot.finalizationPlan : null;
+                                const danoFinalizacao = plano ? plano.damagePerShot : Math.max(1, Math.ceil((alvoM.hp + Math.max(0, alvoM.armor || 0)) / 2));
+                                const angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 8);
+                                bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: angleShoot, speed: 8, damage: danoFinalizacao, skin: "boss" });
+                                bot.lastShot = now;
+                                tocarSom("tiroB");
+                            }
+                        } else if (now - bot.lastAttackChange > 3000) { bot.attackState = Math.floor(Math.random() * 4); bot.lastAttackChange = now; }
+                        if (bot.priorityMode !== "finalização" && bot.attackState === 0) { if (menorD > 200 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > bot.shootCooldown) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 7); for(let a = -0.2; a <= 0.2; a += 0.2) { bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: angleShoot + a, speed: 7, damage: bot.damage, skin: "boss" }); } bot.lastShot = now; tocarSom("tiroB"); } }
+                        else if (bot.priorityMode !== "finalização" && bot.attackState === 1) { if (menorD > 80 || !visaoLimpa) { moverEntidade(bot, Math.cos(anguloMovimento) * (bot.speed*1.5), Math.sin(anguloMovimento) * (bot.speed*1.5)); } else if (now - bot.lastShot > 1000) { tocarSom("espada"); slashes.push({x: bot.x, y: bot.y, angle: bot.angle, life: 1.0, radius: 90, skin: "boss"}); [player, ...bots].forEach(o => { if(o.hp > 0 && o.teamId !== bot.teamId && Math.hypot(o.x - bot.x, o.y - bot.y) < 100) { darDano(o, 60, o.x, o.y, true, bot.id); } }); bot.lastShot = now; } }
+                        else if (bot.priorityMode !== "finalização" && bot.attackState === 2) { if (visaoLimpa && menorD > 100 && menorD < 600 && now - bot.lastShot > 2000) { tocarSom("bomba"); let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 12); basucas.push({ teamId: bot.teamId, ownerId: bot.id, x: bot.x, y: bot.y, angle: angleShoot, speed: 12, damage: 60 }); bot.lastShot = now; } else if (menorD > 600 || !visaoLimpa) { moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); } }
+                        else if (bot.priorityMode !== "finalização" && bot.attackState === 3) { if (menorD > 150 || !visaoLimpa) moverEntidade(bot, Math.cos(anguloMovimento) * bot.speed, Math.sin(anguloMovimento) * bot.speed); if (visaoLimpa && now - bot.lastShot > 200) { let angleShoot = obterAnguloMiraPreditiva(bot, alvoM, 5); let dispersao = 0.5 - obterFatorPredicao() * 0.3; bullets.push({ ownerId: bot.id, teamId: bot.teamId, x: bot.x, y: bot.y, angle: angleShoot + (Math.random() * dispersao * 2 - dispersao), speed: 5, damage: 5, skin: "boss" }); bot.lastShot = now; tocarSom("powerup"); } }
 
                     } else if (bot.lastKnownTarget) {
 
