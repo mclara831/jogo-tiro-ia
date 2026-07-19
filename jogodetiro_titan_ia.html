@@ -183,6 +183,11 @@
             color: var(--cyan);
             font-size: 16px;
         }
+        .hud-threat {
+            border: 1px solid rgba(255,77,109,0.28);
+            background: rgba(255,77,109,0.09);
+        }
+        .hud-threat strong { color: var(--red); }
         .ability-deck {
             position: absolute;
             left: 50%;
@@ -521,6 +526,7 @@
             <div class="hud-metric" id="uiBasuca"><small>Basuca</small><span id="municaoBasuca">2</span></div>
         </div>
         <div class="hud-mode"><span id="infoModoTexto">Inimigos vivos</span><strong id="botsText">9</strong></div>
+        <div id="titanTargetPanel" class="hud-mode hud-threat" style="display: none;"><span>Prioridade do Titã</span><strong id="titanTargetText">Ranqueando...</strong></div>
     </div>
     <canvas id="gameCanvas"></canvas>
     <div id="radarPanel">
@@ -1194,6 +1200,73 @@
         function atualizarMiraJogador() { if(!player) return; let viewCamX = canvas.width / 2 - player.x; let viewCamY = canvas.height / 2 - player.y; mouse.worldX = mouse.x - viewCamX; mouse.worldY = mouse.y - viewCamY; player.angle = Math.atan2(mouse.worldY - player.y, mouse.worldX - player.x); }
         function atirarJogador(now) { if(!player || player.hp <= 0 || now - player.lastShot <= 300) return; bullets.push({ ownerId: player.id, teamId: player.teamId, x: player.x + Math.cos(player.angle) * 20, y: player.y + Math.sin(player.angle) * 20, angle: player.angle, speed: 10, damage: player.damage, skin: player.skin }); player.lastShot = now; tocarSom("tiroJ"); }
 
+        // --- RANQUEAMENTO DE AMEACA DO TITÃ ---
+        // O Titã trata cada dano recebido como um ponto de coleta de informação:
+        // a origem do disparo e o dano efetivo atualizam a utilidade daquele oponente.
+        // A escolha é deliberada apenas em intervalos fixos para impedir trocas de alvo
+        // a cada quadro e manter uma janela real de resposta para a equipe.
+        const INTERVALO_REAVALIACAO_TITA = 4000;
+        const ALCANCE_PRIORIZACAO_TITA = 700;
+
+        function obterEntidadePorId(id) {
+            if (player && player.id === id) return player;
+            return bots.find(bot => bot.id === id) || null;
+        }
+
+        function nomeExibicaoAmeaca(id) {
+            if (id === "player") return "Jogador";
+            if (String(id).startsWith("ally")) return `Aliado ${Number(String(id).replace("ally", "")) + 1}`;
+            return String(id || "Sem alvo");
+        }
+
+        function registrarAmeacaDoTita(tita, sourceId, danoEfetivo, now = Date.now()) {
+            if (!tita || !tita.isBoss || !sourceId || sourceId === tita.id || danoEfetivo <= 0) return;
+            const origem = obterEntidadePorId(sourceId);
+            if (!origem || origem.teamId === tita.teamId) return;
+
+            const ameaca = tita.threatById[sourceId] || { pontos: 0, danoTotal: 0, acertos: 0, ultimoAcerto: 0 };
+            ameaca.pontos += danoEfetivo;
+            ameaca.danoTotal += danoEfetivo;
+            ameaca.acertos += 1;
+            ameaca.ultimoAcerto = now;
+            tita.threatById[sourceId] = ameaca;
+        }
+
+        function listarCandidatosDoTita(tita) {
+            const candidatos = [];
+            const adicionar = alvo => {
+                if (!alvo || alvo === tita || alvo.hp <= 0 || alvo.teamId === tita.teamId) return;
+                const distancia = Math.hypot(alvo.x - tita.x, alvo.y - tita.y);
+                if (distancia > (tita.threatRange || ALCANCE_PRIORIZACAO_TITA)) return;
+                const ameaca = tita.threatById[alvo.id] || { pontos: 0, danoTotal: 0, acertos: 0, ultimoAcerto: 0 };
+                candidatos.push({ id: alvo.id, ref: alvo, distancia, ...ameaca });
+            };
+            adicionar(player);
+            bots.forEach(adicionar);
+            return candidatos;
+        }
+
+        function reavaliarAlvoPrioritarioDoTita(tita, now) {
+            const ranking = listarCandidatosDoTita(tita).sort((a, b) =>
+                b.pontos - a.pontos || b.ultimoAcerto - a.ultimoAcerto || a.distancia - b.distancia
+            );
+            tita.threatRanking = ranking;
+            tita.priorityTargetId = ranking.length > 0 ? ranking[0].id : null;
+            tita.nextThreatEvaluationAt = now + (tita.threatEvaluationInterval || INTERVALO_REAVALIACAO_TITA);
+            atualizarUI();
+        }
+
+        function obterAlvoPrioritarioDoTita(tita, now) {
+            let candidatos = listarCandidatosDoTita(tita);
+            let alvoAtual = candidatos.find(candidato => candidato.id === tita.priorityTargetId);
+            if (now >= (tita.nextThreatEvaluationAt || 0) || !alvoAtual) {
+                reavaliarAlvoPrioritarioDoTita(tita, now);
+                candidatos = tita.threatRanking || [];
+                alvoAtual = candidatos.find(candidato => candidato.id === tita.priorityTargetId);
+            }
+            return alvoAtual ? alvoAtual.ref : null;
+        }
+
         // --- MIRA PREDITIVA DOS BOTS ---
         // Mantem uma media da velocidade realmente executada. Assim, colisoes,
         // esquivas e mudancas bruscas de direcao tambem influenciam a previsao.
@@ -1310,7 +1383,21 @@
             document.getElementById("escudoBar").style.width = `${Math.max(0, Math.min(100, (player.armor / 50) * 100))}%`;
             document.getElementById("dano").innerText = player.damage;
             document.getElementById("vel").innerText = player.speed > 4.5 ? "Relâmpago" : (player.speed > 3.5 ? "Rápido" : "Normal");
-            if (modoJogo === 'boss') { let boss = bots.find(b => b.isBoss); document.getElementById("infoModoTexto").innerText = "HP Chefão:"; document.getElementById("botsText").innerText = boss ? boss.hp : "0"; } else { let numEquipes = getEquipesVivas(); if (modoJogo === 'solo') { document.getElementById("infoModoTexto").innerText = "Inimigos Vivos:"; document.getElementById("botsText").innerText = numEquipes - (player.hp > 0 ? 1 : 0); } else { document.getElementById("infoModoTexto").innerText = "Equipes Vivas:"; document.getElementById("botsText").innerText = numEquipes; } }
+            const painelAmeaca = document.getElementById("titanTargetPanel");
+            const textoAmeaca = document.getElementById("titanTargetText");
+            if (modoJogo === 'boss') {
+                let boss = bots.find(b => b.isBoss);
+                document.getElementById("infoModoTexto").innerText = "HP Chefão:";
+                document.getElementById("botsText").innerText = boss ? boss.hp : "0";
+                painelAmeaca.style.display = "flex";
+                const prioridade = boss && boss.threatRanking ? boss.threatRanking.find(item => item.id === boss.priorityTargetId) : null;
+                textoAmeaca.innerText = prioridade ? `${nomeExibicaoAmeaca(prioridade.id)} · ${Math.round(prioridade.pontos)} pts` : "Ranqueando...";
+            } else {
+                painelAmeaca.style.display = "none";
+                let numEquipes = getEquipesVivas();
+                if (modoJogo === 'solo') { document.getElementById("infoModoTexto").innerText = "Inimigos Vivos:"; document.getElementById("botsText").innerText = numEquipes - (player.hp > 0 ? 1 : 0); }
+                else { document.getElementById("infoModoTexto").innerText = "Equipes Vivas:"; document.getElementById("botsText").innerText = numEquipes; }
+            }
             if (basucaDesbloqueada) { document.getElementById("uiBasuca").style.display = "block"; document.getElementById("municaoBasuca").innerText = player.bazookaAmmo; } else { document.getElementById("uiBasuca").style.display = "none"; }
             document.getElementById("skillSword").classList.toggle("locked", !inventario.espada);
             document.getElementById("skillBomb").classList.toggle("locked", !inventario.granada);
@@ -1374,7 +1461,7 @@
 
             if (modoJogo === 'boss') {
                 for(let i=0; i<3; i++) { let allySpawn = getValidSpawn(false, true, 20); bots.push({ id: "ally" + i, teamId: 1, isBoss: false, x: allySpawn.x, y: allySpawn.y, vx: 0, vy: 0, radius: 15, hp: 150, maxHp: 150, armor: 100, damage: 25, color: "#2196F3", skin: "padrao", speed: 3.6, shootCooldown: 1000, lastShot: i*150, angle: 0, patrolPoint: null, strafeDir: Math.random() < 0.5 ? 1 : -1, stuckCounter: 0, fleePath: null, fleePathIndex: 0, lastFleePathAttempt: 0, path: null, pathIndex: 0, lastPathAttempt: 0 }); }
-                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, vx: 0, vy: 0, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1 });
+                let bossHp = 800 + (nivelChefeProgresso * 300); let bossSpawn = getValidSpawn(false, false, 60); bots.push({ id: "boss", teamId: 2, isBoss: true, x: bossSpawn.x, y: bossSpawn.y, vx: 0, vy: 0, radius: 40, hp: bossHp, maxHp: bossHp, armor: 0, damage: 20, color: "#900", skin: "boss", speed: 1.8 + (nivelChefeProgresso * 0.05), shootCooldown: 1500 - (nivelChefeProgresso * 50), lastShot: 0, angle: 0, attackState: 0, lastAttackChange: Date.now(), strafeDir: 1, stuckCounter: 0, lastKnownTarget: null, path: null, pathIndex: 0, lastPathAttempt: 0, searchStartTime: 0, searchBaseAngle: 0, lockedTargetId: null, lockedTargetUntil: 0, lockedTargetLostAt: 0, searchPoints: [], searchPointIndex: -1, threatById: {}, threatRanking: [], priorityTargetId: null, threatRange: ALCANCE_PRIORIZACAO_TITA, threatEvaluationInterval: INTERVALO_REAVALIACAO_TITA, nextThreatEvaluationAt: 0 });
                 caixas = []; 
             } else {
                 let botSpeedBase = 0.8 + (dificuldade * 0.3); let botCooldown = 2100 - (dificuldade * 300); let teamSpawns = {}; 
@@ -1395,6 +1482,7 @@
             let dFinal = isCritical ? Math.floor(dano * 1.5) : dano; 
             if(sourceId === "player") progressoMissao(2, dFinal); 
             if (entidade.armor && entidade.armor > 0) { if (dFinal >= entidade.armor) { dFinal -= entidade.armor; entidade.armor = 0; entidade.hp -= dFinal; } else { entidade.armor -= dFinal; dFinal = 0; } } else { entidade.hp -= dFinal; } 
+            if (entidade.isBoss) registrarAmeacaDoTita(entidade, sourceId, dFinal);
             if(entidade.id === "player" || entidade.isBoss) atualizarUI(); mostrarDanoText(x, y, isCritical ? (dFinal > 0 ? dFinal : "BLOCKED") : (dFinal > 0 ? dFinal : "BLOCKED"), isCritical); 
         }
         function moverEntidade(entidade, movX, movY) {
@@ -1524,49 +1612,9 @@
                 }
                 if (alvoM && !visaoLimpa) alvoM = null;
                 if (bot.isBoss) {
-
-                    // --- TARGET LOCK: mantém o alvo, mas finaliza oponentes críticos ---
-                    let candidatos = [];
-                    let adicionarCandidatoTita = (alvo) => {
-                        if (!alvo || alvo === bot || alvo.hp <= 0 || alvo.teamId === bot.teamId) return;
-                        let d = Math.hypot(alvo.x - bot.x, alvo.y - bot.y);
-                        let visivel = !temParede(bot.x, bot.y, alvo.x, alvo.y);
-                        let vidaMaxima = Math.max(1, Number(alvo.maxHp) || 100);
-                        let vidaRelativa = Math.max(0, Math.min(1, alvo.hp / vidaMaxima));
-                        candidatos.push({ id: alvo.id, ref: alvo, dist: d, visivel, vidaRelativa });
-                    };
-                    adicionarCandidatoTita(player);
-                    bots.forEach(o => {
-                        adicionarCandidatoTita(o);
-                    });
-
-                    let lockedExpired  = now >= bot.lockedTargetUntil;
-                    let visiveis = candidatos.filter(c => c.visivel);
-                    let alvoTravado = visiveis.find(c => c.id === bot.lockedTargetId) || null;
-                    let lockedStillValid = !lockedExpired && !!alvoTravado;
-                    let criticos = visiveis.filter(c => c.vidaRelativa <= 0.15 && c.dist <= 700);
-                    let criticoPrioritario = criticos.length > 0
-                        ? criticos.reduce((a, b) => (a.vidaRelativa * 1200 + a.dist) < (b.vidaRelativa * 1200 + b.dist) ? a : b)
-                        : null;
-
-                    // Um alvo vivo com ate 15% de HP recebe prioridade temporaria.
-                    // Se o alvo ja travado tambem for crítico, o Tita nao fica trocando.
-                    if (criticoPrioritario && (!lockedStillValid || !alvoTravado || alvoTravado.vidaRelativa > 0.15)) {
-                        alvoM = criticoPrioritario.ref;
-                        bot.lockedTargetId = criticoPrioritario.id;
-                        bot.lockedTargetUntil = now + 2500;
-                    } else if (lockedStillValid) {
-                        alvoM = alvoTravado.ref;
-                    } else if (visiveis.length > 0) {
-                        let escolhido = visiveis.reduce((a, b) => (a.dist + a.vidaRelativa * 150) < (b.dist + b.vidaRelativa * 150) ? a : b);
-                        alvoM = escolhido.ref;
-                        bot.lockedTargetId = escolhido.id;
-                        bot.lockedTargetUntil = now + 3000 + Math.random() * 2000;
-                    } else {
-                        bot.lockedTargetId = null;
-                        bot.lockedTargetUntil = 0;
-                        alvoM = null;
-                    }
+                    // A prioridade deixa de depender de distância ou de HP baixo:
+                    // vence quem acumulou mais pontos de ameaça ao causar dano no Titã.
+                    alvoM = obterAlvoPrioritarioDoTita(bot, now);
 
                     let visaoLimpa = alvoM ? !temParede(bot.x, bot.y, alvoM.x, alvoM.y) : false;
                     let menorD     = alvoM ? Math.hypot(alvoM.x - bot.x, alvoM.y - bot.y) : Infinity;
