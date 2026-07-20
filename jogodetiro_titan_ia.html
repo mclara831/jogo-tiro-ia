@@ -1651,13 +1651,53 @@
                 if (bot.isBoss) {
                     // O ranking de ameaça define a prioridade normal; a rotina de
                     // finalização pode interrompê-lo para eliminar um alvo crítico.
-                    alvoM = obterAlvoPrioritarioDoTita(bot, now);
+                    const alvoPrioritario = obterAlvoPrioritarioDoTita(bot, now);
 
-                    let visaoLimpa = alvoM ? !temParede(bot.x, bot.y, alvoM.x, alvoM.y) : false;
-                    let menorD     = alvoM ? Math.hypot(alvoM.x - bot.x, alvoM.y - bot.y) : Infinity;
+                    let visaoLimpa = alvoPrioritario
+                        ? !temParede(
+                            bot.x,
+                            bot.y,
+                            alvoPrioritario.x,
+                            alvoPrioritario.y
+                        )
+                        : false;
+
+                    let menorD = alvoPrioritario
+                        ? Math.hypot(
+                            alvoPrioritario.x - bot.x,
+                            alvoPrioritario.y - bot.y
+                        )
+                        : Infinity;
+
+                    // O alvo continua no ranking, mas só pode ser combatido
+                    // diretamente quando estiver visível.
+                    alvoM = visaoLimpa ? alvoPrioritario : null;
 
                     if (alvoM) {
-                        bot.lastKnownTarget = { x: alvoM.x, y: alvoM.y };
+                        const estavaProcurando =
+                            bot.lockedTargetLostAt > 0 ||
+                            bot.searchPointIndex >= 0;
+
+                        const alvoMudou =
+                            bot.lockedTargetId !== alvoM.id;
+
+                        // Impede que um caminho antigo da investigação seja utilizado
+                        // depois que o inimigo reaparecer ou o alvo mudar.
+                        if (estavaProcurando || alvoMudou) {
+                            bot.path = null;
+                            bot.pathIndex = 0;
+                            bot.lastPathAttempt = 0;
+                        }
+
+                        bot.lockedTargetId = alvoM.id;
+
+                        // Atualizada exclusivamente quando existe linha de visão.
+                        bot.lastKnownTarget = {
+                            id: alvoM.id,
+                            x: alvoM.x,
+                            y: alvoM.y,
+                            lastSeenAt: now
+                        };
                         bot.lockedTargetLostAt = 0;
                         bot.searchStartTime = 0;
                         bot.searchPoints = [];
@@ -1695,9 +1735,8 @@
                         let distAlvo = Math.hypot(bot.lastKnownTarget.x - bot.x, bot.lastKnownTarget.y - bot.y);
                         let tempoSemAlvo = now - bot.lockedTargetLostAt;
 
-
+                        const distanciaChegada = Math.max(50, bot.radius + 10);
                         //abandona lastKnownTarget se tempo esgotado
-                        let distLimite    = 800;
                         let tempoLimite   = 15000;
                         if (tempoSemAlvo > tempoLimite) {
                             bot.lastKnownTarget  = null;
@@ -1707,8 +1746,7 @@
                             bot.path             = null;
                             bot.searchStartTime  = 0;
                         } else
-                         if (distAlvo > 300) {
-                            console.log(distAlvo)
+                        if (distAlvo > distanciaChegada) {
                             if (bot.path && bot.pathIndex >= bot.path.length) bot.path = null;
                             if (!bot.path && now - bot.lastPathAttempt > 500) { bot.path = encontrarCaminhoAStar(bot.x, bot.y, bot.lastKnownTarget.x, bot.lastKnownTarget.y, bot.radius); bot.pathIndex = 0; bot.lastPathAttempt = now; }
                             let destino = bot.lastKnownTarget;
@@ -1719,7 +1757,6 @@
                             // chegou ao lastKnownTarget — inicia busca por pontos prováveis
                             if (bot.searchPointIndex < 0) {
                                 bot.searchPoints = gerarPontosInvestigacao(bot.lastKnownTarget, 180);
-                                console.log(bot.searchPoints)
                                 bot.searchPointIndex = 0;
                                 bot.path = null;
                                 bot.lastPathAttempt = 0;
@@ -1728,7 +1765,6 @@
                             let pontoAtual = bot.searchPoints[bot.searchPointIndex];
 
                             if (pontoAtual) {
-                                console.log(bot.searchPointIndex)
                                 if (!bot.path && now - bot.lastPathAttempt > 200) {
                                     bot.path = encontrarCaminhoAStar(bot.x, bot.y, pontoAtual.x, pontoAtual.y, bot.radius);
                                     bot.pathIndex = 0;
@@ -1742,7 +1778,7 @@
                                         moverEntidade(bot, Math.cos(bot.angle) * bot.speed, Math.sin(bot.angle) * bot.speed);
                                     }
                                     let chegouNoFim   = bot.pathIndex >= bot.path.length;
-                                    let chegouNoPonto = Math.hypot(bot.x - pontoAtual.x, bot.y - pontoAtual.y) < 300;
+                                    let chegouNoPonto = Math.hypot(bot.x - pontoAtual.x, bot.y - pontoAtual.y) < Math.max(40, bot.radius + 10);
                                     if (chegouNoFim || chegouNoPonto) {
                                         bot.searchPointIndex++;
                                         bot.path = null;
